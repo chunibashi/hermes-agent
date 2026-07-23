@@ -1376,8 +1376,13 @@ class QQAdapter(BasePlatformAdapter):
 
         # Non-allowed users: prefix with context-only instruction
         # so the AI knows this message is for context, not for reply.
+        # Include a sortable timestamp + sender hint so the AI can
+        # distinguish multiple context-only messages in history.
         if not user_allowed:
-            text = f"[Context-only — do NOT reply to this user.]\n{text}"
+            # timestamp is ISO 8601 from QQ API (e.g. 2026-07-23T10:08:35+08:00)
+            ts = timestamp.split("+")[0].split("T")[1] if "+" in timestamp else timestamp[:19]
+            sender_short = member_openid[:8]
+            text = f"[Context-only — do NOT reply — {sender_short} @ {ts}]\n{text}"
 
         self._chat_type_map[group_openid] = "group"
         event = MessageEvent(
