@@ -3862,7 +3862,7 @@ class GatewaySlashCommandsMixin:
             try:
                 await self._session_db.create_session(
                     session_id=session_id,
-                    source=source.platform.value if source.platform else "unknown",
+                    source={"platform": source.platform.value if source.platform else "unknown", "chat_id": source.chat_id, "chat_type": source.chat_type, "user_id": source.user_id},
                     user_id=source.user_id,
                     # Persist the messaging origin so a later /resume of this
                     # titled-but-now-inactive session can prove it belongs to the
@@ -4115,7 +4115,7 @@ class GatewaySlashCommandsMixin:
         rows = await asyncio.to_thread(
             query_session_listing,
             getattr(self._session_db, "_db", self._session_db),
-            source=source.platform.value if source.platform else None,
+            source={"platform": source.platform.value if source.platform else None, "chat_id": source.chat_id, "chat_type": source.chat_type, "user_id": source.user_id},
             current_session_id=current_entry.session_id,
             include_all_sources=cross_origin,
             include_unnamed=include_unnamed,
@@ -4192,7 +4192,7 @@ class GatewaySlashCommandsMixin:
         try:
             await self._session_db.create_session(
                 session_id=new_session_id,
-                source=source.platform.value if source.platform else "gateway",
+                source={"platform": source.platform.value if source.platform else "gateway", "chat_id": source.chat_id, "chat_type": source.chat_type, "user_id": source.user_id},
                 model=(self.config.get("model", {}) or {}).get("default") if isinstance(self.config, dict) else None,
                 model_config={"_branched_from": parent_session_id},
                 parent_session_id=parent_session_id,

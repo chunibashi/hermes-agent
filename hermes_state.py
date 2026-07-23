@@ -3775,8 +3775,10 @@ class SessionDB:
                 )
         self._execute_write(_do)
 
-    def create_session(self, session_id: str, source: str, **kwargs) -> str:
+    def create_session(self, session_id: str, source, **kwargs) -> str:
         """Create a new session record. Returns the session_id."""
+        if isinstance(source, dict):
+            source = json.dumps(source, ensure_ascii=False)
         self._insert_session_row(session_id, source, **kwargs)
         return session_id
 
