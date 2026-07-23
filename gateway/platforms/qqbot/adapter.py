@@ -1338,6 +1338,10 @@ class QQAdapter(BasePlatformAdapter):
                 self._app_id, member_openid,
             )
             self._suppress_response[group_openid] = True
+        else:
+            # Allowed user posting: clear any pending suppression so their
+            # replies are not accidentally blocked.
+            self._suppress_response.pop(group_openid, None)
 
         # Strip the @bot mention prefix from content
         text = self._strip_at_mention(content)
@@ -2472,7 +2476,10 @@ class QQAdapter(BasePlatformAdapter):
         del metadata
 
         # One-shot suppression for non-allowed users' context messages.
-        if self._suppress_response.pop(chat_id, False):
+        # Use get() not pop() — send() may be called multiple times (typing,
+        # base class internals, actual response); pop() consumes the flag
+        # on the first call and the real reply leaks through.
+        if self._suppress_response.get(chat_id, False):
             logger.info(
                 "[%s] Suppressed response to non-allowed user in %s",
                 self._log_tag, chat_id,
