@@ -1335,7 +1335,7 @@ class QQAdapter(BasePlatformAdapter):
             logger.warning(
                 "[QQBot:%s] User not in QQ_ALLOWED_USERS: member_openid=%s; "
                 "message visible to AI, response suppressed",
-                self.app_id, member_openid,
+                self._app_id, member_openid,
             )
             self._suppress_response[group_openid] = True
 
