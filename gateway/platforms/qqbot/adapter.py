@@ -1331,6 +1331,10 @@ class QQAdapter(BasePlatformAdapter):
         # but with suppression flag so send() drops the response.
         member_openid = str(author.get("member_openid", ""))
         user_allowed = self._is_user_allowed(member_openid)
+        # Extract nickname from QQ API member.nick field
+        _member = d.get("member") if isinstance(d.get("member"), dict) else {}
+        nick = str(_member.get("nick", "")) or str(author.get("username", "")) or ""
+        sender_label = nick[:20] if nick else member_openid[:8]
         if not user_allowed:
             logger.warning(
                 "[QQBot:%s] User not in QQ_ALLOWED_USERS: member_openid=%s; "
@@ -1381,14 +1385,13 @@ class QQAdapter(BasePlatformAdapter):
         if not user_allowed:
             # timestamp is ISO 8601 from QQ API (e.g. 2026-07-23T10:08:35+08:00)
             ts = timestamp.split("+")[0].split("T")[1] if "+" in timestamp else timestamp[:19]
-            sender_short = member_openid[:8]
-            text = f"[Context-only — do NOT reply — {sender_short} @ {ts}]\n{text}"
+            text = f"[Context-only — do NOT reply — {sender_label} @ {ts}]\n{text}"
 
         self._chat_type_map[group_openid] = "group"
         event = MessageEvent(
             source=self.build_source(
                 chat_id=group_openid,
-                user_id=str(author.get("member_openid", "")),
+                user_id=group_openid,
                 chat_type="group",
             ),
             text=text,
