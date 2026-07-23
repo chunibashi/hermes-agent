@@ -228,6 +228,9 @@ class QQAdapter(BasePlatformAdapter):
         self._last_seq: Optional[int] = None
         self._chat_type_map: Dict[str, str] = {}  # chat_id → "c2c"|"group"|"guild"|"dm"
 
+        # Per-chat response suppression flag for non-allowed users.
+        self._suppress_response: Dict[str, bool] = {}
+
         # Request/response correlation
         self._pending_responses: Dict[str, asyncio.Future] = {}
         self._seen_messages: Dict[str, float] = {}
@@ -851,6 +854,7 @@ class QQAdapter(BasePlatformAdapter):
             elif t in {
                     "C2C_MESSAGE_CREATE",
                     "GROUP_AT_MESSAGE_CREATE",
+                    "GROUP_MESSAGE_CREATE",
                     "DIRECT_MESSAGE_CREATE",
                     "GUILD_MESSAGE_CREATE",
                     "GUILD_AT_MESSAGE_CREATE",
@@ -950,7 +954,7 @@ class QQAdapter(BasePlatformAdapter):
         # Route by event type
         if event_type == "C2C_MESSAGE_CREATE":
             await self._handle_c2c_message(d, msg_id, content, author, timestamp)
-        elif event_type in {"GROUP_AT_MESSAGE_CREATE",}:
+        elif event_type in {"GROUP_AT_MESSAGE_CREATE", "GROUP_MESSAGE_CREATE"}:
             await self._handle_group_message(d, msg_id, content, author, timestamp)
         elif event_type in {"GUILD_MESSAGE_CREATE", "GUILD_AT_MESSAGE_CREATE"}:
             await self._handle_guild_message(d, msg_id, content, author, timestamp)
@@ -1323,6 +1327,18 @@ class QQAdapter(BasePlatformAdapter):
         ):
             return
 
+        # User-level ACL: non-allowed users' messages enter AI context
+        # but with suppression flag so send() drops the response.
+        member_openid = str(author.get("member_openid", ""))
+        user_allowed = self._is_user_allowed(member_openid)
+        if not user_allowed:
+            logger.warning(
+                "[QQBot:%s] User not in QQ_ALLOWED_USERS: member_openid=%s; "
+                "message visible to AI, response suppressed",
+                self.app_id, member_openid,
+            )
+            self._suppress_response[group_openid] = True
+
         # Strip the @bot mention prefix from content
         text = self._strip_at_mention(content)
         att_result = await self._process_attachments(d.get("attachments"))
@@ -1353,6 +1369,11 @@ class QQAdapter(BasePlatformAdapter):
 
         if not text.strip() and not image_urls:
             return
+
+        # Non-allowed users: prefix with context-only instruction
+        # so the AI knows this message is for context, not for reply.
+        if not user_allowed:
+            text = f"[Context-only — do NOT reply to this user.]\n{text}"
 
         self._chat_type_map[group_openid] = "group"
         event = MessageEvent(
@@ -2450,6 +2471,14 @@ class QQAdapter(BasePlatformAdapter):
         """
         del metadata
 
+        # One-shot suppression for non-allowed users' context messages.
+        if self._suppress_response.pop(chat_id, False):
+            logger.info(
+                "[%s] Suppressed response to non-allowed user in %s",
+                self._log_tag, chat_id,
+            )
+            return SendResult(success=True)
+
         if not self.is_connected:
             if not await self._wait_for_reconnection():
                 return SendResult(success=False, error="Not connected", retryable=True)
@@ -3190,6 +3219,12 @@ class QQAdapter(BasePlatformAdapter):
         return False
 
     def _is_group_allowed(self, group_id: str, user_id: str) -> bool:
+        # Allow group if QQ_GROUP_ALLOWED_USERS env var is set and matches
+        env_group_users = os.environ.get("QQ_GROUP_ALLOWED_USERS", "")
+        if env_group_users:
+            allowed = {u.strip().lower() for u in env_group_users.split(",") if u.strip()}
+            if allowed:
+                return group_id.strip().lower() in allowed
         if self._group_policy == "disabled":
             return False
         if self._group_policy == "allowlist":
@@ -3199,6 +3234,15 @@ class QQAdapter(BasePlatformAdapter):
         if self._group_policy == "open":
             return True
         return False
+
+    def _is_user_allowed(self, user_id: str) -> bool:
+        """User-level ACL: read QQ_ALLOWED_USERS env var, fallback to allow-all."""
+        env_users = os.environ.get("QQ_ALLOWED_USERS", "")
+        if env_users:
+            allowed = {u.strip().lower() for u in env_users.split(",") if u.strip()}
+            if allowed:
+                return user_id.strip().lower() in allowed
+        return True  # no QQ_ALLOWED_USERS set → allow everyone
 
     @staticmethod
     def _entry_matches(entries: List[str], target: str) -> bool:
