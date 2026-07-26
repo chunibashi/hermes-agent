@@ -554,15 +554,6 @@ def _parse_target_ref(platform_name: str, target_ref: str):
             return match.group(1), match.group(2), True
         match = _SLACK_TARGET_RE.fullmatch(target_ref)
         if match:
-<<<<<<< HEAD
-            return match.group(1), None, True
-        match = _SLACK_USER_ID_RE.fullmatch(target_ref) or _SLACK_MENTION_RE.fullmatch(target_ref)
-        if match:
-            return f"user:{match.group(1)}", None, True
-        match = _SLACK_USER_NAME_RE.fullmatch(target_ref)
-        if match:
-            return f"user_name:{match.group(1)}", None, True
-=======
             chat_id = match.group(1)
             # Slack user IDs (U...) and workspace IDs (W...) are NOT valid
             # explicit send targets — chat.postMessage rejects them. A DM
@@ -571,9 +562,14 @@ def _parse_target_ref(platform_name: str, target_ref: str):
             # resolution path in send_message() can run.
             is_explicit = chat_id[0] not in {"U", "W"}
             return chat_id, None, is_explicit
+        match = _SLACK_USER_ID_RE.fullmatch(target_ref) or _SLACK_MENTION_RE.fullmatch(target_ref)
+        if match:
+            return f"user:{match.group(1)}", None, True
+        match = _SLACK_USER_NAME_RE.fullmatch(target_ref)
+        if match:
+            return f"user_name:{match.group(1)}", None, True
     if platform_name == "qqbot" and len(target_ref) == 32 and all(c in "0123456789abcdefABCDEF" for c in target_ref):
         return target_ref, None, True
->>>>>>> 89d2cb107 (fix(send): support QQ hex target + dict source for slash commands)
     if platform_name == "matrix":
         trimmed = target_ref.strip()
         split_idx = trimmed.rfind(":$")
