@@ -159,13 +159,22 @@ def _toolset_enabled(config: Dict[str, object], toolset_key: str) -> bool:
 def _has_agent_browser() -> bool:
     import shutil
 
-    from hermes_constants import agent_browser_runnable
+    from hermes_constants import agent_browser_runnable, get_hermes_home
 
     # Validate the resolved binary actually runs — a dangling global symlink
     # (issue #48521) is reported by ``which`` but fails at exec. Fall through to
     # the local node_modules copy, which the validator also checks.
     if agent_browser_runnable(shutil.which("agent-browser")):
         return True
+
+    # Check npm -g --prefix install into $HERMES_HOME/node/ (e.g. on Windows
+    # where the user ran `npm install -g agent-browser --prefix <hermes_home>/node`).
+    # npm puts .cmd shims directly in the prefix dir on Windows.
+    home = get_hermes_home()
+    hermes_bin = home / "node" / "agent-browser.cmd"
+    if hermes_bin.exists() and agent_browser_runnable(str(hermes_bin)):
+        return True
+
     local_bin = (
         Path(__file__).parent.parent / "node_modules" / ".bin" / "agent-browser"
     )
