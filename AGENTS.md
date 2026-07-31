@@ -1433,3 +1433,21 @@ test('windowsHide defaults to true on Windows, is left alone elsewhere', () => {
 If the logic lives inline in a god-file (`main.ts`, `cli.py`,
 `gateway/run.py`) and extracting it feels disruptive: that's the actual
 signal to do the extraction, not to regex around it.
+
+### Completion Claim Rule — evidence required before "done"
+
+Before claiming a task as "complete" / "done" / "完成" / "finished":
+
+1. The claim must reference **verifiable evidence** (file timestamp, process count, log output, test result).
+2. A claim like "更新完成" without `stat` output, `tasklist` count, or `desktop.log` check is **insufficient**.
+3. If the task has a skill with a verification gate (e.g. `hermes-update` step 6a), execute that gate and include its output in the claim.
+4. **One claim per turn.** If you claim completion and the verifier shows a failure, do NOT issue a second claim in the same turn — fix the issue first.
+
+**Violations are process errors, not intent errors.** The fix is: re-read the verification gate, execute it, and show the output. Do not move on without fixing.
+
+### Cron Pause Rule — never pause without user instruction
+
+Do NOT pause or resume cron jobs unless the user explicitly asks.
+- "test passed" does NOT mean "pause the cron" — wait for the user's response.
+- If a cron job ran successfully, record the result and let the user decide.
+- The only exception: a cron job is actively corrupting data (e.g. deleting files).

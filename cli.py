@@ -9743,6 +9743,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         elif canonical == "handoff":
             if not self._handle_handoff_command(cmd_original):
                 return False
+        elif canonical == "pack":
+            self._handle_pack(cmd_original)
         elif canonical == "new":
             # Strip inline-skip tokens (now/--yes/-y) before deriving the title
             # so "/new now My Session" yields title="My Session" instead of
@@ -10884,6 +10886,72 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 )
                 print(f"  ❌ Compression failed: {e}")
 
+
+    def _handle_pack(self, cmd_original: str = ""):
+        """Export/import session to a file snapshot.
+
+        /pack              → export $TMPDIR/hermes-handoff/<sessionID>.json
+        /pack <sessionID>  → import that file, prepend into current conversation
+        """
+        import json, os, tempfile
+
+        handoff_dir = os.path.join(tempfile.gettempdir(), "hermes-handoff")
+        os.makedirs(handoff_dir, exist_ok=True)
+
+        parts = cmd_original.split()
+        target_id = parts[1].strip() if len(parts) > 1 else ""
+
+        if target_id:
+            # ── Import ──
+            filepath = os.path.join(handoff_dir, f"{target_id}.json")
+            if not os.path.isfile(filepath):
+                print(f"  (._.) Pack file not found: {filepath}"); return
+            try:
+                with open(filepath, "r", encoding="utf-8") as f:
+                    snapshot = json.load(f)
+                old_messages = snapshot.get("conversation_history", [])
+                if not old_messages:
+                    print(f"  (._.) Empty."); return
+                # 1. In-place prepend (preserves reference identity)
+                prefix = [{"role": "system", "content": f"[Handoff from session {target_id}]"}]
+                self.conversation_history[:] = prefix + old_messages + self.conversation_history
+                # 2. Sync agent internal list if separate object
+                if self.agent:
+                    agent_msgs = getattr(self.agent, "_session_messages", None)
+                    if agent_msgs is not None and agent_msgs is not self.conversation_history:
+                        try: agent_msgs[:] = self.conversation_history
+                        except TypeError: pass
+                # 3. Write to DB so agent sees messages at turn start
+                if self._session_db and self.session_id:
+                    try:
+                        self._session_db.create_session(self.session_id, source="pack")
+                    except Exception:
+                        pass  # session already exists
+                    self._session_db.replace_messages(self.session_id, self.conversation_history)
+                # 4. Reset agent flush markers
+                if self.agent:
+                    ids = getattr(self.agent, "_flushed_db_message_ids", None) or set()
+                    self.agent._flushed_db_message_ids = ids
+                    ids.clear()
+                print(f"  ✅ Pack loaded: {target_id} ({len(old_messages)} messages)")
+                self._pack_imported = True
+            except Exception as e:
+                print(f"  ❌ Pack import failed: {e}")
+        else:
+            # ── Export ──
+            history = list(self.conversation_history) if self.conversation_history else []
+            if not history and self._session_db and self.session_id:
+                try: history = self._session_db.get_messages_as_conversation(self.session_id)
+                except Exception: pass
+            if not history:
+                print("(._.) No conversation to pack."); return
+            sid = self.session_id or "unknown"
+            filepath = os.path.join(handoff_dir, f"{sid}.json")
+            with open(filepath, "w", encoding="utf-8") as f:
+                json.dump({"session_id": sid, "conversation_history": history,
+                           "message_count": len(history)}, f,
+                          ensure_ascii=False, indent=2, default=str)
+            print(f"  ✅ Pack exported: {sid}\n     File: {filepath}\n     ({len(history)} messages)")
 
 
     def _handle_usage_command(self, cmd_original: str):
@@ -13369,6 +13437,20 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         agent = self.agent
         if agent is None:
             return None
+
+        # Sync pack-imported history into agent's session messages.
+        # _init_agent creates a fresh agent with _session_messages=[], so
+        # any history loaded via /pack before this turn would be invisible.
+        # Only runs when _pack_imported flag is set (one-shot).
+        if getattr(self, '_pack_imported', False) and self.conversation_history:
+            agent_msgs = getattr(agent, "_session_messages", [])
+            if agent_msgs is not self.conversation_history:
+                try:
+                    agent_msgs.clear()
+                    agent_msgs.extend(self.conversation_history)
+                except (TypeError, AttributeError):
+                    pass
+            self._pack_imported = False
 
         # Route image attachments based on the active model's vision capability.
         # "native" → pass pixels as OpenAI-style content parts (adapters

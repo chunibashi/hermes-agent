@@ -1970,6 +1970,19 @@ def _start_agent_build(sid: str, session: dict) -> None:
             # Session DB row deferred to first run_conversation() call.
             # pending_title applied post-first-message (see cli.exec handler).
             current["agent"] = agent
+            # Inject any pre-loaded history (from /pack, /resume, etc.) into
+            # the freshly-built agent.  _session_messages starts as [] and is
+            # completely disconnected from session["history"].
+            with current["history_lock"]:
+                _pre_hist = current.get("history", [])
+                if _pre_hist:
+                    _agent_msgs = getattr(agent, "_session_messages", None)
+                    if _agent_msgs is not None and _agent_msgs is not _pre_hist:
+                        try:
+                            _agent_msgs.clear()
+                            _agent_msgs.extend(_pre_hist)
+                        except (TypeError, AttributeError):
+                            pass
             # Baseline for the per-turn config sync; the profile home
             # override is still active here.
             current["config_model_seen"] = _config_model_target()
@@ -8974,6 +8987,9 @@ def _run_prompt_submit(
         if not isinstance(inflight, dict) or inflight.get("status") == "error":
             _start_inflight_turn(session, text)
     agent = session["agent"]
+    if agent:
+        _sms = getattr(agent, "_session_messages", [])
+        print(f"[PACK-DIAG] sid={sid} session_history={len(history)} agent_msgs={len(_sms)} at _run_prompt_submit start", file=sys.stderr)
     if hasattr(agent, "clear_interrupt"):
         try:
             agent.clear_interrupt()
@@ -11997,7 +12013,7 @@ def _mirror_slash_side_effects(sid: str, session: dict, command: str) -> str:
     # worker thread running agent.run_conversation is using.  Parity
     # with the session.compress / session.undo guards and the gateway
     # runner's running-agent /model guard.
-    _MUTATES_WHILE_RUNNING = {"model", "personality", "prompt", "compress"}
+    _MUTATES_WHILE_RUNNING = {"model", "personality", "prompt", "compress", "pack"}
     if _session_uses_compute_host(session) and name in _MUTATES_WHILE_RUNNING:
         route_name = f"slash.{name}"
         try:
@@ -12102,6 +12118,48 @@ def _mirror_slash_side_effects(sid: str, session: dict, command: str) -> str:
             _emit("session.info", sid, _session_info(agent, session))
         elif name == "reload-mcp" and agent and hasattr(agent, "reload_mcp_tools"):
             agent.reload_mcp_tools()
+        elif name == "pack":
+            # /pack imported messages into the worker's DB session (wrong sid).
+            # Read the JSON snapshot file and inject into the live session,
+            # regardless of whether agent is built yet (new session, lazy build).
+            try:
+                import json as _json, os as _os, tempfile as _tf
+                target_id = arg.strip()
+                filepath = _os.path.join(_tf.gettempdir(), "hermes-handoff", f"{target_id}.json")
+                if not target_id or not _os.path.isfile(filepath):
+                    return f"Pack file not found for {target_id}"
+                with open(filepath, "r", encoding="utf-8") as f:
+                    snapshot = _json.load(f)
+                old_messages = snapshot.get("conversation_history", [])
+                if not old_messages:
+                    return "Empty pack file"
+
+                # 1. Build merged history (same object reference as agent._session_messages)
+                prefix = [{"role": "system", "content": f"[Handoff from session {target_id}]"}]
+                merged = prefix + old_messages + session.get("history", [])
+
+                # 2. Set session["history"] (replace reference)
+                with session["history_lock"]:
+                    session["history"] = merged
+
+                # 3. Inject into agent._session_messages IF agent exists
+                #    Replace reference directly, not clear+extend, so agent
+                #    sees the new list (not a stale empty one).
+                if agent:
+                    agent_msgs = getattr(agent, "_session_messages", None)
+                    if agent_msgs is not None:
+                        agent._session_messages = merged
+
+                # 4. Write to correct DB session for durability
+                with _session_db(session) as db:
+                    if db:
+                        db.create_session(sid, source="pack")
+                        db.replace_messages(sid, merged)
+
+                _emit("session.info", sid, _session_info(agent, session))
+                return f"✅ Loaded {len(old_messages)} messages from session {target_id}"
+            except Exception as e:
+                return f"Pack failed: {e}"
         elif name == "stop":
             from tools.process_registry import process_registry
 
