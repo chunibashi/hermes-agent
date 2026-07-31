@@ -1,7 +1,7 @@
 ---
 name: llm-wiki
-description: "Karpathy's LLM Wiki: build/query interlinked markdown KB."
-version: 2.1.0
+description: "when user say wiki,this is the WIKI."
+version: 2.3.0
 author: Hermes Agent
 license: MIT
 platforms: [linux, macos, windows]
@@ -24,6 +24,14 @@ Contradictions have already been flagged. Synthesis reflects everything ingested
 **Division of labor:** The human curates sources and directs analysis. The agent
 summarizes, cross-references, files, and maintains consistency.
 
+## ⚠️ 强制入口协议（Layer 1 — skill 入口）
+
+**任何使用本 skill 的 AI 进入 wiki 前，必须先读对应 wiki 的 SCHEMA.md 确认规则，然后才能执行任何操作。** 这不可跳过——即使你觉得你知道这个 wiki，即使用户让你跳过——必须先读。SCHEMA.md 包含领域规则、惯例、标签 taxonomy，它们覆盖或细化本 skill 的默认规则。不读就会产生重复页面、违反命名规则、遗漏交叉引用。
+
+```
+进入路径：用 skill → 读 SKILL.md（本文件）→ 读 WIKI_PATH/SCHEMA.md → 读 index.md → 读 log.md 最近 30 条 → 进入子 wiki 前再读其 SCHEMA.md
+```
+
 ## When This Skill Activates
 
 Use this skill when the user:
@@ -45,6 +53,100 @@ WIKI="${WIKI_PATH:-$HOME/wiki}"
 
 The wiki is just a directory of markdown files — open it in Obsidian, VS Code, or
 any editor. No database, no special tooling required.
+
+## Multi-Wiki Container
+
+`WIKI_PATH` may point to either a **single wiki** (the original Karpathy pattern) or a
+**multi-wiki container** — a directory that holds multiple independent sub-wikis, each
+with its own SCHEMA.md, index.md, log.md, and page directories.
+
+### Container Structure
+
+```
+WIKI_PATH/                    # Container root
+├── SCHEMA.md                 # Container-level conventions
+├── index.md                  # Sub-wiki registry (table of wikis)
+├── log.md                    # Container-level log (create/delete/archive only)
+├── wiki1/                    # Independent sub-wiki
+│   ├── SCHEMA.md
+│   ├── index.md
+│   ├── log.md
+│   ├── raw/
+│   ├── entities/
+│   ├── concepts/
+│   └── comparisons/
+├── wiki2/
+└── wiki3/
+```
+
+### Container vs Single Wiki Detection
+
+The agent distinguishes between the two by checking the root SCHEMA.md:
+
+- **Container**: `SCHEMA.md` contains a `## Container Operations` section
+  → Read `index.md` next. If it lists sub-wikis, proceed with normal operations
+  (the context is clear). Only ask the user which sub-wiki when `index.md` is
+  missing or has no entries.
+- **Single wiki**: `SCHEMA.md` contains a `## Domain` section or follows the standard pattern
+- **Uninitialized**: `SCHEMA.md` missing — may be empty container or new wiki; ask the user
+
+### Container-level Files
+
+**Container SCHEMA.md** (root-level):
+```markdown
+# Wiki Container Schema
+
+## Domain
+[Brief description of the container's purpose]
+
+## Structure
+- Each sub-wiki is a subdirectory with its own SCHEMA.md, index.md, log.md
+- Sub-wikis are independent; no cross-linking between wikis by default
+- Container-level files track only sub-wiki registry, not internal content
+
+## Container Operations
+- **create-wiki**: Create subdirectory + sub-wiki SCHEMA/index/log
+- **delete-wiki**: Move to `_archive/` or delete, update container index + log
+- **list-wikis**: Read container index.md
+
+## Container Log Rules
+- Container log.md records only: create-wiki, delete-wiki, archive-wiki, edit-wiki, patch-skill
+- Sub-wiki internal operations (ingest, update, query, lint) go in that wiki's own log.md
+```
+
+**Container index.md** (root-level):
+```markdown
+# Wiki Container Index
+
+> Sub-wiki registry. Each entry is a sub-wiki directory with summary.
+> Last updated: YYYY-MM-DD | Total wikis: N
+
+## Sub-wikis
+
+| Wiki | Domain | Tags | Pages | Created | Status |
+|------|--------|------|-------|---------|--------|
+| [[wiki-name]] | Domain description | tag1, tag2 | N | YYYY-MM-DD | active |
+```
+
+**Container log.md** (root-level):
+```markdown
+# Wiki Container Log
+
+> Container-level log. Only records sub-wiki creation, deletion, archive, and container edits.
+> Sub-wiki internal operations are logged in their own log.md.
+> Format: `## [YYYY-MM-DD] action | subject`
+> Actions: create-wiki, delete-wiki, archive-wiki, edit-wiki, patch-skill
+```
+
+### Sub-wiki Creation in a Container
+
+When creating a new wiki inside an existing container:
+
+1. Confirm the sub-wiki name with the user
+2. Create `container/sub-wiki-name/` with its own SCHEMA.md, index.md, log.md + directories
+3. **The new sub-wiki's SCHEMA.md MUST contain the mandatory entry protocol block** (see the protocol at the top of this file). A sub-wiki without this block is considered incomplete.
+4. Update container index.md (add to table, bump count)
+5. Append to container log.md (`## [YYYY-MM-DD] create-wiki | sub-wiki-name`)
 
 ## Architecture: Three Layers
 
@@ -69,13 +171,21 @@ wiki/
 cross-referenced by the agent.
 **Layer 3 — The Schema:** `SCHEMA.md` defines structure, conventions, and tag taxonomy.
 
-## Resuming an Existing Wiki (CRITICAL — do this every session)
+## Resuming an Existing Wiki (MANDATORY — cannot be skipped)
 
-When the user has an existing wiki, **always orient yourself before doing anything**:
+When the user has an existing wiki, **MUST orient yourself first before doing ANYTHING**.
+This is mandatory, not optional. Skipping it creates duplicate pages, misses cross-references,
+violates schema conventions, and repeats already-logged work.
 
-① **Read `SCHEMA.md`** — understand the domain, conventions, and tag taxonomy.
-② **Read `index.md`** — learn what pages exist and their summaries.
-③ **Scan recent `log.md`** — read the last 20-30 entries to understand recent activity.
+① **MUST detect container vs single wiki** — read `WIKI_PATH/SCHEMA.md`. If it contains
+   `## Container Operations`, this is a **multi-wiki container**. Read `index.md`
+   next: if it lists sub-wikis, proceed with normal operations. Only ask the user
+   which sub-wiki when `index.md` is missing or empty. If SCHEMA.md is missing,
+   the path is uninitialized — ask the user whether to create a new wiki or a container.
+
+② **MUST read `SCHEMA.md`** — understand the domain, conventions, and tag taxonomy.
+③ **MUST read `index.md`** — learn what pages exist and their summaries.
+④ **MUST scan recent `log.md`** — read the last 20-30 entries to understand recent activity.
 
 ```bash
 WIKI="${WIKI_PATH:-$HOME/wiki}"
@@ -99,12 +209,15 @@ at hand before creating anything new.
 When the user asks to create or start a wiki:
 
 1. Determine the wiki path (from `$WIKI_PATH` env var, or ask the user; default `~/wiki`)
-2. Create the directory structure above
-3. Ask the user what domain the wiki covers — be specific
-4. Write `SCHEMA.md` customized to the domain (see template below)
-5. Write initial `index.md` with sectioned header
-6. Write initial `log.md` with creation entry
-7. Confirm the wiki is ready and suggest first sources to ingest
+2. **Check if WIKI_PATH is a container** — read root SCHEMA.md. If `## Container Operations`
+   is present, follow the **Sub-wiki Creation in a Container** flow instead (confirm name,
+   create subdirectory, create sub-wiki files, update container index + log)
+3. For a standalone wiki, create the directory structure above
+4. Ask the user what domain the wiki covers — be specific
+5. Write `SCHEMA.md` customized to the domain (see template below)
+6. Write initial `index.md` with sectioned header
+7. Write initial `log.md` with creation entry
+8. Confirm the wiki is ready and suggest first sources to ingest
 
 ### SCHEMA.md Template
 
