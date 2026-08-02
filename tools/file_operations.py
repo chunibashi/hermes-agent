@@ -32,7 +32,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Optional, List, Dict, Any, ClassVar
 from pathlib import Path
-from tools.binary_extensions import BINARY_EXTENSIONS
+from tools.binary_extensions import BINARY_EXTENSIONS, TEXT_EXTENSIONS
 
 from agent.file_safety import (
     build_write_denied_paths,
@@ -875,13 +875,21 @@ class ShellFileOperations(FileOperations):
     def _is_likely_binary(self, path: str, content_sample: str = None) -> bool:
         """
         Check if a file is likely binary.
-        
+
         Uses extension check (fast) + content analysis (fallback).
         """
         ext = os.path.splitext(path)[1].lower()
         if ext in BINARY_EXTENSIONS:
             return True
-        
+
+        # Known plain-text / source / structured-data extensions are ALWAYS
+        # treated as text. This prevents multi-byte UTF-8 (e.g. CJK) that gets
+        # byte-truncated by the 4 KiB sampler from being misdetected as binary
+        # via a stray U+FFFD — see the hardening note below. Such files must
+        # never be skipped on read; the agent can decide how to use them.
+        if ext in TEXT_EXTENSIONS:
+            return False
+
         # Content analysis: >30% non-printable chars = binary
         if content_sample:
             # Undecodable bytes: the terminal env decodes stdout with
@@ -891,14 +899,16 @@ class ShellFileOperations(FileOperations):
             # lossy text would let a read→edit→write round-trip silently
             # overwrite the original bytes with mojibake. Treat a file whose
             # sample carries the replacement char as binary (read-only) so the
-            # agent can't corrupt it. Legitimate UTF-8 text effectively never
-            # contains U+FFFD.
-            if "\ufffd" in content_sample[:1000]:
+            # agent can't corrupt it. This hardening is only applied to
+            # unknown / no-extension files (the branch above already whitelisted
+            # known text extensions); legitimate UTF-8 text effectively never
+            # contains U+FFFD unless the byte stream was genuinely corrupted.
+            if "\ufffd" in content_sample[:4096]:
                 return True
-            non_printable = sum(1 for c in content_sample[:1000]
+            non_printable = sum(1 for c in content_sample[:4096]
                                if ord(c) < 32 and c not in '\n\r\t')
-            return non_printable / min(len(content_sample), 1000) > 0.30
-        
+            return non_printable / min(len(content_sample), 4096) > 0.30
+
         return False
     
     def _is_image(self, path: str) -> bool:
@@ -1179,7 +1189,7 @@ class ShellFileOperations(FileOperations):
             )
         
         # Read a sample to check for binary content
-        sample_cmd = f"head -c 1000 {self._escape_shell_arg(path)} 2>/dev/null"
+        sample_cmd = f"head -c 4096 {self._escape_shell_arg(path)} 2>/dev/null"
         sample_result = self._exec(sample_cmd)
         sample_output = _strip_terminal_fence_leaks(sample_result.stdout)
         

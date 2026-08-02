@@ -35,8 +35,8 @@ class TestIsLikelyBinary:
 
 
     def test_just_above_threshold(self, ops):
-        """301/1000 = 30.1% non-printable → should be binary."""
-        sample = "\x00" * 301 + "a" * 699
+        """~1300/4096 = 31.7% non-printable → should be binary (4096-char window)."""
+        sample = "\x00" * 1300 + "a" * 2796
         assert ops._is_likely_binary("data.xyz", content_sample=sample) is True
 
     def test_tabs_and_newlines_excluded(self, ops):
@@ -44,11 +44,11 @@ class TestIsLikelyBinary:
         sample = "\t" * 400 + "\n" * 300 + "\r" * 200 + "a" * 100
         assert ops._is_likely_binary("file.txt", content_sample=sample) is False
 
-    def test_content_sample_longer_than_1000(self, ops):
-        """Only the first 1000 characters should be analysed."""
-        # First 1000 chars: 200 NUL + 800 printable = 20% → not binary
-        # Remaining 1000 chars: all NUL → ignored by [:1000] slice
-        sample = "\x00" * 200 + "a" * 800 + "\x00" * 1000
+    def test_content_sample_longer_than_window(self, ops):
+        """Only the first 4096 characters should be analysed (4096-char window)."""
+        # First 4096 chars: 200 NUL + 3896 printable = ~4.9% → not binary
+        # Remaining chars: all NUL → ignored by [:4096] slice
+        sample = "\x00" * 200 + "a" * 3896 + "\x00" * 2000
         assert ops._is_likely_binary("file.xyz", content_sample=sample) is False
 
 

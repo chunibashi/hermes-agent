@@ -666,8 +666,20 @@ class TestReadNonUtf8IsBinary:
     def test_replacement_char_sample_flagged_binary(self, tmp_path):
         ops = ShellFileOperations(make_real_subprocess_env(str(tmp_path)))
         # A latin-1 file decoded with errors="replace" yields U+FFFD chars.
+        # For unknown / no-extension files the hardening still applies: we must
+        # NOT return lossy text the agent could corrupt via round-trip.
         lossy_sample = "caf\ufffd r\ufffdsum\ufffd\n"
-        assert ops._is_likely_binary("notes.txt", lossy_sample) is True
+        assert ops._is_likely_binary("notes.xyz", lossy_sample) is True
+
+    def test_known_text_ext_not_flagged_by_replacement_char(self, tmp_path):
+        ops = ShellFileOperations(make_real_subprocess_env(str(tmp_path)))
+        # Known text extensions (incl. .txt/.md) must NOT be skipped just because
+        # a byte-truncated multi-byte UTF-8 sample (e.g. CJK) yields U+FFFD.
+        # This is the regression cron reviews hit: head -c N byte-truncates CJK
+        # text into a stray U+FFFD, which used to be misdetected as binary.
+        lossy_cjk_sample = "中文内容被截断\ufffd的片段\n"
+        assert ops._is_likely_binary("notes.txt", lossy_cjk_sample) is False
+        assert ops._is_likely_binary("wiki.md", lossy_cjk_sample) is False
 
     def test_plain_utf8_text_not_flagged(self, tmp_path):
         ops = ShellFileOperations(make_real_subprocess_env(str(tmp_path)))
