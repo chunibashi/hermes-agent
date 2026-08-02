@@ -1,4 +1,5 @@
 import { useQuery } from '@tanstack/react-query'
+import { useStore } from '@nanostores/react'
 import { useState } from 'react'
 
 import { useI18n } from '@/i18n'
@@ -11,6 +12,12 @@ import type { ModelOptionProvider, ModelPricing } from '@/types/hermes'
 import type { HermesGateway } from '../hermes'
 import { cn } from '../lib/utils'
 import { startManualOnboarding } from '../store/onboarding'
+import {
+  $favoriteModels,
+  isFavorite,
+  setFavoriteModels,
+  toggleFavorite
+} from '@/store/model-favorites'
 
 import { InlineNotice } from './notifications'
 import { Button } from './ui/button'
@@ -151,6 +158,7 @@ function ModelResults({
 }) {
   const { t } = useI18n()
   const copy = t.modelPicker
+  const favorites = useStore($favoriteModels)
 
   if (loading) {
     return <LoadingResults />
@@ -187,10 +195,19 @@ function ModelResults({
     <>
       {configured.map(provider => {
         // Preserve the backend's curated order — filter in place, no re-sort.
-        const models = (provider.models ?? []).filter(m => matches(provider, m))
+        let models = (provider.models ?? []).filter(m => matches(provider, m))
 
         if (models.length === 0) {
           return null
+        }
+
+        // Sort favorites to the top when not searching.
+        if (!q && favorites && favorites.size > 0) {
+          const favKey = (m: string) => `${provider.slug}::${m}`
+          models = [
+            ...models.filter(m => favorites.has(favKey(m))),
+            ...models.filter(m => !favorites.has(favKey(m)))
+          ]
         }
 
         const unavailable = new Set(provider.unavailable_models ?? [])
@@ -208,6 +225,12 @@ function ModelResults({
               const isCurrent = model === currentModel && provider.slug === currentProvider
               const price = provider.pricing?.[model]
               const locked = unavailable.has(model)
+              const faved = isFavorite(favorites, provider.slug, model)
+              const toggleFav = (event: React.MouseEvent) => {
+                event.stopPropagation()
+                event.preventDefault()
+                setFavoriteModels(toggleFavorite($favoriteModels.get(), provider.slug, model))
+              }
 
               return (
                 <CommandItem
@@ -226,6 +249,16 @@ function ModelResults({
                   }}
                   value={`${provider.slug}:${model}`}
                 >
+                  <button
+                    aria-label={faved ? copy.unfavorite : copy.favorite}
+                    className="shrink-0 cursor-pointer text-[0.7rem] leading-none hover:scale-110 transition-transform"
+                    onClick={toggleFav}
+                    tabIndex={-1}
+                    title={faved ? copy.unfavorite : copy.favorite}
+                    type="button"
+                  >
+                    {faved ? '★' : '☆'}
+                  </button>
                   <span className="min-w-0 flex-1 truncate">
                     <HighlightMatches query={search} text={model} />
                   </span>

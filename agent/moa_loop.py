@@ -518,6 +518,10 @@ def _run_reference(
             # ``copilot-language-server`` integrator even though standalone
             # Copilot calls work.
             extra_headers = {"x-initiator": "user"}
+        logger.info(
+            "MoA reference START: label=%s model=%s provider=%s temperature=%s",
+            label, slot.get("model"), runtime.get("provider"), temperature,
+        )
         response = call_llm(
             task="moa_reference",
             messages=messages,
@@ -1120,9 +1124,12 @@ def _preset_temperature(preset: dict[str, Any], key: str) -> float | None:
     """
     value = preset.get(key)
     if value is None or (isinstance(value, str) and not value.strip()):
+        logger.info("MoA [%s] preset=%s -> None (provider default)", key, preset.get("name", "unknown"))
         return None
     try:
-        return float(value)
+        result = float(value)
+        logger.info("MoA [%s] preset=%s -> %s", key, preset.get("name", "unknown"), result)
+        return result
     except (TypeError, ValueError):
         logger.warning("ignoring non-numeric %s=%r in MoA preset", key, value)
         return None
@@ -1738,6 +1745,11 @@ class MoAChatCompletions:
         agg_extra_body = _merge_slot_extra_body(
             agg_runtime.pop("extra_body", None),
             extra_body,
+        )
+        logger.info(
+            "MoA aggregator START: model=%s provider=%s temperature=%s",
+            aggregator.get("model"), agg_runtime.get("provider"),
+            aggregator_temperature,
         )
         _agg_response = call_llm(
             task="moa_aggregator",

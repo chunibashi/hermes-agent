@@ -2556,7 +2556,9 @@ export const zh: Translations = {
     free: '免费',
     freeTier: '免费层',
     priceTitle: '每百万 token 的输入/输出价格',
-    wasPrice: '原价'
+    wasPrice: '原价',
+    favorite: '收藏',
+    unfavorite: '取消收藏'
   },
 
   modelVisibility: {
@@ -2575,7 +2577,9 @@ export const zh: Translations = {
       noModels: '未找到模型',
       editModels: '编辑模型…',
       refreshModels: '刷新模型',
-      fast: '快速'
+      fast: '快速',
+      favorite: '收藏',
+      unfavorite: '取消收藏'
     },
     modelOptions: {
       noOptions: '此模型没有可用选项',

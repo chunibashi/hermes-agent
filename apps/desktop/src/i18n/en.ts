@@ -2375,7 +2375,9 @@ export const en: Translations = {
     free: 'Free',
     freeTier: 'Free tier',
     priceTitle: 'Input / Output price per million tokens',
-    wasPrice: 'was'
+    wasPrice: 'was',
+    favorite: 'Favorite',
+    unfavorite: 'Unfavorite'
   },
 
   modelVisibility: {
@@ -2394,7 +2396,9 @@ export const en: Translations = {
       noModels: 'No models found',
       editModels: 'Edit Models…',
       refreshModels: 'Refresh Models',
-      fast: 'Fast'
+      fast: 'Fast',
+      favorite: 'Favorite',
+      unfavorite: 'Unfavorite'
     },
     modelOptions: {
       noOptions: 'No options for this model',

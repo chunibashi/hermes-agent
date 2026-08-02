@@ -1979,6 +1979,8 @@ export interface Translations {
     freeTier: string
     priceTitle: string
     wasPrice: string
+    favorite: string
+    unfavorite: string
   }
 
   modelVisibility: {
@@ -1998,6 +2000,8 @@ export interface Translations {
       editModels: string
       refreshModels: string
       fast: string
+      favorite: string
+      unfavorite: string
     }
     modelOptions: {
       noOptions: string

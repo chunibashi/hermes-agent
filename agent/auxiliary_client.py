@@ -8275,6 +8275,16 @@ def call_llm(
         tools=tools, timeout=effective_timeout, extra_body=effective_extra_body,
         reasoning_config=reasoning_config,
         base_url=_base_info or resolved_base_url, task=task)
+    if "temperature" in kwargs:
+        logger.info(
+            "call_llm final kwargs: model=%s provider=%s temperature=%s",
+            kwargs.get("model"), resolved_provider, kwargs["temperature"],
+        )
+    else:
+        logger.info(
+            "call_llm final kwargs: model=%s provider=%s temperature=NONE (omitted)",
+            kwargs.get("model"), resolved_provider,
+        )
     if extra_headers:
         kwargs["extra_headers"] = dict(extra_headers)
 

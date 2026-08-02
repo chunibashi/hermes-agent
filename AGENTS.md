@@ -1451,3 +1451,18 @@ Do NOT pause or resume cron jobs unless the user explicitly asks.
 - "test passed" does NOT mean "pause the cron" — wait for the user's response.
 - If a cron job ran successfully, record the result and let the user decide.
 - The only exception: a cron job is actively corrupting data (e.g. deleting files).
+
+### Write-after-Verify Rule
+
+Every `write_file` or `patch` call MUST be followed by a `read_file` or
+`search_files` verification of the target file before the next tool call.
+"Tool returned success" is necessary but not sufficient — verify the actual
+file on disk exists with expected content.
+
+### Report Constraint Rule
+
+The final "done" / "complete" claim MAY ONLY list items that were verified
+by a subsequent tool call in the same session. Items that were planned but
+not executed must be listed separately under "Not done" / "未完成".
+One claim per turn — if verification reveals a missing item, fix it before
+re-claiming.
