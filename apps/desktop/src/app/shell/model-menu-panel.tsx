@@ -41,13 +41,6 @@ import { $defaultReasoningEffort } from '@/store/session'
 import type { ModelOptionProvider, ModelOptionsResponse } from '@/types/hermes'
 
 import { ModelEditSubmenu, resolveFastControl } from './model-edit-submenu'
-import {
-  $favoriteModels,
-  isFavorite,
-  setFavoriteModels,
-  toggleFavorite
-} from '@/store/model-favorites'
-
 // Lets the host dropdown (model-pill) hand the panel a way to dismiss itself so
 // clicking a model row commits + closes, while the hover-revealed edit submenu
 // (reasoning/fast) stays open to play with (its items preventDefault on select).

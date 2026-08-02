@@ -12,13 +12,6 @@ import type { ModelOptionProvider, ModelPricing } from '@/types/hermes'
 import type { HermesGateway } from '../hermes'
 import { cn } from '../lib/utils'
 import { startManualOnboarding } from '../store/onboarding'
-import {
-  $favoriteModels,
-  isFavorite,
-  setFavoriteModels,
-  toggleFavorite
-} from '@/store/model-favorites'
-
 import { InlineNotice } from './notifications'
 import { Button } from './ui/button'
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from './ui/command'
