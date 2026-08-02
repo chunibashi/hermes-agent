@@ -256,6 +256,10 @@ _REFERENCE_SYSTEM_PROMPT = (
     "have missed or gotten wrong. Assume any referenced files, URLs, or "
     "systems exist and reason about them from the context given rather than "
     "asking for access.\n\n"
+    "IMPORTANT: The conversation text below may contain *Agent invoked ...* "
+    "and *Tool returned: ...* markers. These describe actions the acting "
+    "agent took. NEVER include these markers in your own response — they are "
+    "input metadata, not an output format to imitate.\n\n"
     "Respond with your advice directly — no preamble, no disclaimers about "
     "tools or access. Your response is private guidance handed to the "
     "aggregator, not an answer shown to the user. NEVER claim to have executed "
@@ -967,14 +971,18 @@ def _render_tool_calls(tool_calls: Any) -> str:
                 args_text = str(fn_args)
         else:
             args_text = ""
-        lines.append(f"[called tool: {name}({args_text})]" if args_text else f"[called tool: {name}]")
+        lines.append(f"*Agent invoked {name} with args: {args_text}*" if args_text else f"*Agent invoked {name}*")
     return "\n".join(lines)
 
 
 _ADVISORY_INSTRUCTION = (
-    "[The conversation above is the current state of the task. Give your "
-    "most intelligent judgement: what is going on, what should happen next, "
-    "what risks or mistakes you see, and how the acting agent should "
+    "[You are a reference advisor. The conversation above shows the acting "
+    "agent's history with *Agent invoked ...* and *Tool returned: ...* "
+    "entries — these are input records describing the acting agent's past "
+    "actions, NOT an output format for you to follow. DO NOT reproduce "
+    "asterisk-wrapped markers or JSON structures in your response. Respond "
+    "ONLY with plain-text analysis: what is going on, what should happen "
+    "next, what risks or mistakes you see, and how the acting agent should "
     "proceed.]"
 )
 
@@ -1077,7 +1085,7 @@ def _reference_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
             # the reference sees what came back, without emitting a tool-role
             # message a reference never produced.
             result_text = _truncate_tool_result(text)
-            block = f"[tool result: {result_text}]"
+            block = f"*Tool returned: {result_text}*"
             if rendered and rendered[-1].get("role") == "assistant":
                 rendered[-1]["content"] = rendered[-1]["content"] + "\n" + block
             else:
