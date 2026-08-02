@@ -33,6 +33,31 @@ BINARY_EXTENSIONS = frozenset({
     ".lockb", ".dat", ".data",
 })
 
+# Known plain-text / source / structured-data extensions. Files with these
+# extensions are ALWAYS treated as text so read_file pulls the real content
+# even when multi-byte UTF-8 (e.g. CJK) gets byte-truncated by the sampler
+# into a stray U+FFFD, which would otherwise be misdetected as binary and
+# cause the read to be skipped. The U+FFFD hardening in
+# tools/file_operations.py only applies to unknown / no-extension files,
+# where a replacement char genuinely signals corruption risk.
+TEXT_EXTENSIONS = frozenset({
+    # Markup / docs
+    ".md", ".markdown", ".txt", ".text", ".rst", ".adoc", ".asciidoc",
+    # Data / config
+    ".json", ".jsonl", ".json5", ".yaml", ".yml", ".toml", ".ini", ".cfg",
+    ".conf", ".config", ".properties", ".xml", ".csv", ".tsv",
+    # Web
+    ".html", ".htm", ".svg", ".css", ".scss", ".less", ".vue", ".svelte",
+    # Source (general)
+    ".py", ".pyi", ".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".c", ".h",
+    ".cpp", ".cc", ".hpp", ".hxx", ".cs", ".java", ".kt", ".kts", ".go",
+    ".rs", ".rb", ".php", ".pl", ".pm", ".lua", ".sql", ".r", ".sh", ".bash",
+    ".zsh", ".fish", ".ps1", ".bat", ".cmd", ".psm1",
+    # Misc text-ish
+    ".log", ".tex", ".bib", ".proto", ".graphql", ".gql", ".tf", ".tfvars",
+    ".gradle", ".mk", ".cmake", ".rss", ".atom",
+})
+
 
 def has_binary_extension(path: str) -> bool:
     """Check if a file path has a binary extension. Pure string check, no I/O."""
