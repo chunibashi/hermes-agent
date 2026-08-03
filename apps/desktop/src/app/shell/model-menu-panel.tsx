@@ -450,6 +450,7 @@ export function ModelMenuPanel({ gateway, onSelectModel, profile = 'default', re
                       closeMenu()
                     }
 
+                    const favKey = `${group.provider.slug}:${family.id}`
                     return (
                       <DropdownMenuSub key={favKey}>
                         <DropdownMenuSubTrigger
