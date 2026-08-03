@@ -85,7 +85,6 @@ export function ModelMenuPanel({ gateway, onSelectModel, profile = 'default', re
   const defaultEffort = useStore($defaultReasoningEffort) || DEFAULT_REASONING_EFFORT
   const visibleModels = useStore($visibleModels)
   const collapsedProviders = useStore($collapsedProviders)
-  const favorites = useStore($favoriteModels)
 
   const modelOptions = useQuery({
     queryKey: modelOptionsQueryKey(profile, activeSessionId),
@@ -210,8 +209,8 @@ export function ModelMenuPanel({ gateway, onSelectModel, profile = 'default', re
 
   const groups = useMemo(
     () =>
-      groupModels(pickerProviders, search, { model: optionsModel, provider: optionsProvider }, effectiveVisibleModels, favorites),
-    [pickerProviders, search, optionsModel, optionsProvider, effectiveVisibleModels, favorites]
+      groupModels(pickerProviders, search, { model: optionsModel, provider: optionsProvider }, effectiveVisibleModels),
+    [pickerProviders, search, optionsModel, optionsProvider, effectiveVisibleModels]
   )
 
   const q = normalize(search)
@@ -451,14 +450,6 @@ export function ModelMenuPanel({ gateway, onSelectModel, profile = 'default', re
                       closeMenu()
                     }
 
-                    const favKey = `${group.provider.slug}:${family.id}`
-                    const faved = isFavorite(favorites, group.provider.slug, family.id)
-                    const toggleFav = (event: React.MouseEvent) => {
-                      event.stopPropagation()
-                      event.preventDefault()
-                      setFavoriteModels(toggleFavorite($favoriteModels.get(), group.provider.slug, family.id))
-                    }
-
                     return (
                       <DropdownMenuSub key={favKey}>
                         <DropdownMenuSubTrigger
@@ -471,16 +462,6 @@ export function ModelMenuPanel({ gateway, onSelectModel, profile = 'default', re
                           }}
                           {...kbRowProps(favKey)}
                         >
-                          <button
-                            aria-label={faved ? copy.unfavorite : copy.favorite}
-                            className="shrink-0 cursor-pointer text-[0.7rem] leading-none hover:scale-110 transition-transform"
-                            onClick={toggleFav}
-                            tabIndex={-1}
-                            title={faved ? copy.unfavorite : copy.favorite}
-                            type="button"
-                          >
-                            {faved ? '★' : '☆'}
-                          </button>
                           <span className="min-w-0 flex-1 truncate">
                             <HighlightMatches query={search} text={name} />
                             {meta ? <span className="text-(--ui-text-tertiary)"> {meta}</span> : null}
@@ -570,7 +551,6 @@ function groupModels(
   search: string,
   current: { model: string; provider: string },
   visible: Set<string> | null,
-  favorites: Set<string> | null
 ): ProviderGroup[] {
   const q = normalize(search)
   const groups: ProviderGroup[] = []
@@ -615,16 +595,6 @@ function groupModels(
 
     let families = allFamilies.filter(family => shown.has(family.id) || family.id === activeId)
 
-    // Sort favorites to the top within each provider group (only when not
-    // searching — a query already narrows the view and reordering would
-    // fight the user's intent).
-    if (!q && favorites && favorites.size > 0) {
-      const favKey = (family: ModelFamily) => `${provider.slug}::${family.id}`
-      families = [
-        ...families.filter(family => favorites.has(favKey(family))),
-        ...families.filter(family => !favorites.has(favKey(family)))
-      ]
-    }
 
     if (families.length > 0) {
       groups.push({ families, provider })
