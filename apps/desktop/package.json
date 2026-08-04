@@ -61,7 +61,8 @@
     "check": "npm run check:lint && npm run check:test:ui && npm run test:desktop:platforms && npm run test:desktop:all",
     "test:e2e": "npm run build && playwright test e2e/",
     "test:e2e:visual": "npm run build && WLR_BACKENDS=headless WLR_NO_HARDWARE_CURSORS=1 cage -- npx playwright test e2e/ --reporter=list",
-    "test:e2e:update-snapshots": "npm run build && WLR_BACKENDS=headless WLR_NO_HARDWARE_CURSORS=1 cage -- npx playwright test e2e/ --reporter=list --update-snapshots"
+    "test:e2e:update-snapshots": "npm run build && WLR_BACKENDS=headless WLR_NO_HARDWARE_CURSORS=1 cage -- npx playwright test e2e/ --reporter=list --update-snapshots",
+    "dist:win:portable": "npm run build && npm run builder -- --win portable --config.directories.output=release-portable"
   },
   "dependencies": {
     "@assistant-ui/core": "0.2.23",
