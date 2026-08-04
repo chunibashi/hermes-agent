@@ -1,88 +1,76 @@
-# Upstream Changelog 2026-08-04
+# Changelog — 2026-08-05
 
-Behind origin/main: 59 commits
+Upstream merge: 63 commits from NousResearch/hermes-agent.
 
 ## 🌟 Highlights
 
-- **xAI**: native web_search honor configured backend on Responses path
-- **File-ops**: eliminate redundant subprocess calls in write_file/V4A patch (perf)
-- **Gateway**: replace SSE poll loop with call_soon_threadsafe-fed asyncio.Queue (perf)
-- **Gateway**: prewarm /model picker cache on TUI startup (perf)
-- **Dashboard/TUI**: fix stale-session-token reload loop, spinner perf
-- **Models**: add qwen3.8-max to Nous portal + OpenRouter, replacing qwen3.7-max
-- **CLI**: add 'sessions clean-markers' to purge stale tool-call markers
-- **Agent**: fix output-cap retry path, compress messages on retry
+- **Desktop: multi-tab drag & session re-homing** — shift/opt-click selects tabs to drag together, session move to project via row menu, transcript-window paging, read/unread state, render-weight budget
+- **Profile sharing** — /export, /import, REST API, portable bundle (theme, layout, skills, plugins)
+- **Desktop plugin SDK expansion** — ctx.os (curated OS door), ctx.notifyNative (native OS notifications)
+- **Credential pool hardening** — key rotation clears exhaustion state, sole-credential transient cooldown, full 403 bench, .env edits adopt at turn boundary
+- **Observability: relay shared metrics v2** — aggregated bounded tool metrics, model/provider attribution, lifecycle metrics, schema v2
+- **Relay stability** — skipped-turn context preservation, LIFO enforcement, concurrent turn scope fix
+- **Dev sandbox** — fake installer/main/git clones, proxy/SSH shim, release tag sampling
+- **Install E2E tests** — update-from-release pipeline validation
 
-## Commits by Type
+## Features
 
-### feat
-- feat(cli): add sessions clean-markers to permanently purge stale tool-call markers
-- feat(models): add qwen3.8-max to Nous portal + OpenRouter catalogs
+- feat(dev-sandbox): support fake installer / fake main / git clones (84874c58a)
+- feat(desktop): move a session to another project from its row menu (edae3eed1)
+- feat(gateway): session.workspace.move — re-home a stored session's workspace (28b3b0dd1)
+- feat(desktop): shift-click and opt-click select tabs to drag together (33c1d1f26)
+- feat(desktop): the layout tree moves a tab block as one unit (cc8e97499)
+- feat(state): sessions carry read/unread state (ec0c8d9c2)
+- feat(desktop): share a profile as a portable bundle - theme, layout, skills (6e7eafc7e)
+- feat(cli): /export and /import slash commands for profile sharing (bde8c4e10)
+- feat(profiles): REST export/import + extra_files overlay hook (d1196750c)
+- feat(desktop): ctx.os — the curated OS door for plugins (e8ccb4a2e)
+- feat(desktop): Show earlier pages the DOM, then pulls older history from the store (62012a536)
+- feat(desktop): expose native OS notifications to plugins via ctx.notifyNative (5d24594ab)
+- feat(observability): aggregate bounded tool metrics (8b0c3da8c)
+- feat(observability): report model and provider usage (dc4714b1e)
 
-### fix
-- fix(xai): honor configured web search backend on Responses path
-- fix: wire HermesConsoleModal WS into stale-token reload guard
-- fix: update ChatPage test import for react-router v7
-- fix(dashboard): reload loopback tabs after stale session-token closes
-- fix(telegram+sqlite): resolve polling conflict loop + misleading WAL warning
-- fix(file-ops): surrogatepass in bytes_written encode
-- fix(file-ops): decouple BOM detection from pre_content, add V4A backward compat
-- fix(credential-pool): lock the quarantine read-modify-write of _entries
-- fix(credential-pool): re-select in acquire_lease after a deferred refresh
-- fix(test): feed the SSE writers an asyncio queue, not queue.Queue
-- fix: reconstruct fused test after conflict resolution
-- fix(conversation_loop): prune dead vision-strip fallback; harden output-cap retry
-- fix(conversation_loop): compress messages on output-cap retry path
-- fix(agent): repair sessions already contaminated with stale tool-call markers
-- fix(agent): discard bare tool-call marker before fallback/persistence
-- fix: close the Codex app-server session on agent teardown
-- fix(gateway): bound go_dormant ws.close with teardown timeout
-- fix(gateway): keep event loop alive during /compress and Relay drain
-- fix(model_metadata): read llama.cpp context from meta.n_ctx + accept sole model
-- fix(agent): keep context_length pin for named custom providers
+## Bug Fixes
 
-### perf
-- perf(file-ops): eliminate redundant subprocess calls in write_file and V4A patch path
-- perf(tui): bound reasoning-clean input to the displayed tail
-- perf(gateway): replace SSE poll loop with call_soon_threadsafe-fed asyncio.Queue
-- perf(desktop): keep spinner frames out of React commits
-- perf(cli): check local auth.json/config before slow provider registry sweep
-- perf(gateway): prewarm /model picker cache on TUI startup
-- perf: reuse request_input_estimate instead of recomputing estimate_request_tokens_rough
+- fix(models): a model id missing its vendor prefix says so instead of 404ing (#78909) (fdc342c08)
+- fix(models): a model id missing its vendor prefix says so instead of 404ing (#78856) (43717123c)
+- fix(profiles): exported archives open in Finder (GNU tar, not PAX) (1d6606d2c)
+- fix(credential-pool): bench a billing 403 fully, even as the sole key (9cd033868)
+- fix: thread sole_credential into next_available_at sibling site (d1eb08fcf)
+- fix(credential-pool): short cooldown for sole credential on transient throttle (dcd750434)
+- fix(debug): say where a client-side log lives instead of "(file not found)" (#78687) (97641a820)
+- fix(agent): adopt .env credential/base-url edits at the turn boundary (#67843) (2d70f5632)
+- fix(credential-pool): clear exhaustion state on key rotation (#22622) (fe859a1f5)
+- fix(desktop): bound the transcript reaching assistant-ui by render cost (#55191) (a538b1c98)
+- fix(desktop): ⌘1 / ⌃Tab return to the chat from a full-page view (91337e578)
+- fix(model-switch): treat models dict as metadata, not allowlist (f66319097)
+- fix(relay): gate skipped task completion (80c7ccf4a)
+- fix(relay): preserve skipped turn context (e1caa611b)
+- fix(relay): gate skipped turn metrics (a2a08fe14)
+- fix(relay): preserve legacy turn shims (704baa5c3)
+- fix(relay): avoid concurrent turn scope corruption (9a9b670e2)
+- fix(observability): include auxiliary model routes (43d29a37c)
+- fix(observability): preserve shared metrics compatibility (dfb8c1bd4)
+- fix(observability): harden tool lifecycle metrics (8502e464a)
+- fix(observability): derive tool metrics from runtime metadata (4ad78a98f)
+- fix(observability): preserve configured model attribution (a0476b360)
 
-### refactor
-- refactor(xai): simplify _xai_prefers_native_web_search to use registry
-- refactor(file-ops): fold simplify-pass findings
-- refactor(gateway): route session event stream through _sse_frame (ensure_ascii=False)
-- refactor(gateway): route all three SSE writers through _sse_frame()
-- refactor(gateway): extract _sse_frame() helper, dedup 5 inline SSE encode call sites
-- refactor: dedup stale-marker regex — use compiled _STALE_MARKER_RE in conversation_loop
+## Refactors
 
-### test
-- test(xai): cover Firecrawl vs native web_search on Responses
-- test: exercise the production _loop_ref path in put_threadsafe tests
-- test: add cross-thread put_threadsafe + long-reasoning tail tests
-- test(desktop): cover minimized/hidden window-state + visibilitychange pause
-- test(cli): regression tests pinning auth-first ordering skips registry sweep
-- test(tui): pin picker-cache prewarm wiring in entry.main()
-- test(gateway): cover named-custom context pin on session-info banner
-- test: swap context-switch-guard fixture off qwen3.8-max-preview
+- refactor(desktop): share render weight between the two transcript budgets (1ed702be7)
 
-### chore
-- chore: map jun@junho.co to junhohong
-- chore: remove dead tomli dependency declaration
-- chore: update uv.lock for tomli dependency (rebase fix)
-- chore: AUTHOR_MAP — add BobClawblaw for PR #77870 salvage
-- chore: drop CHANGELOG.md and docs/reports/ — not shipped with salvage PRs
-- chore: add contributor email mapping for johnrazmus
-- chore: add contributor email mapping for ElSnacko
-- chore: sync uv.lock with nemo-relay android marker
-- chore: exempt android installs from nemo-relay
+## Tests
 
-### other
-- fmt(js): npm run fix on merge
-- fix comment about relay workaround
+- test(install): prove updating from a release reaches this commit (3d9ec4d62)
+- test: teach the hand-rolled fake pools the failure_reason kwarg (9712b8f0c)
+- test(model-switch): cover Ollama context_length models dict probing (e6977f41b)
+- test(relay): enforce LIFO in overlap regression (2e65b0c60)
 
----
-Generated: 2026年 8月  4日 火曜日 22:17:13    
+## CI / Chores
 
+- ci: test updating from sampled release tags, on tag + every 12h (36cb5ae55)
+- chore(ci): rerun checks (9ce917f8a)
+
+## Other
+
+- Discord drops an empty outbound message instead of sending it (#78815) (b3e45a3d4)
