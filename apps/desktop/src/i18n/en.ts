@@ -2378,7 +2378,8 @@ export const en: Translations = {
     priceTitle: 'Input / Output price per million tokens',
     wasPrice: 'was',
     favorite: 'Favorite',
-    unfavorite: 'Unfavorite'
+    unfavorite: 'Unfavorite',
+    favorites: 'Favorites'
   },
 
   modelVisibility: {
@@ -2399,7 +2400,8 @@ export const en: Translations = {
       refreshModels: 'Refresh Models',
       fast: 'Fast',
       favorite: 'Favorite',
-      unfavorite: 'Unfavorite'
+      unfavorite: 'Unfavorite',
+      favorites: 'Favorites'
     },
     modelOptions: {
       noOptions: 'No options for this model',

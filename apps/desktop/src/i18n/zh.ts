@@ -2559,7 +2559,8 @@ export const zh: Translations = {
     priceTitle: '每百万 token 的输入/输出价格',
     wasPrice: '原价',
     favorite: '收藏',
-    unfavorite: '取消收藏'
+    unfavorite: '取消收藏',
+    favorites: '收藏'
   },
 
   modelVisibility: {
@@ -2580,7 +2581,8 @@ export const zh: Translations = {
       refreshModels: '刷新模型',
       fast: '快速',
       favorite: '收藏',
-      unfavorite: '取消收藏'
+      unfavorite: '取消收藏',
+      favorites: '收藏'
     },
     modelOptions: {
       noOptions: '此模型没有可用选项',

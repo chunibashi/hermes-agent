@@ -26,7 +26,7 @@ import { currentPickerSelection, displayModelName, modelDisplayParts } from '@/l
 import { DEFAULT_REASONING_EFFORT, reasoningEffortLabel } from '@/lib/reasoning-effort'
 import { normalize } from '@/lib/text'
 import { cn } from '@/lib/utils'
-import { $modelPresets, applyModelPreset, modelPresetKey } from '@/store/model-presets'
+import { $modelPresets, applyModelPreset, modelPresetKey, setModelPreset } from '@/store/model-presets'
 import {
   $visibleModels,
   collapseModelFamilies,
@@ -39,8 +39,15 @@ import {
 import { $collapsedProviders, toggleCollapsedProvider } from '@/store/provider-collapse'
 import { $defaultReasoningEffort } from '@/store/session'
 import type { ModelOptionProvider, ModelOptionsResponse } from '@/types/hermes'
+import {
+  $favoriteModels,
+  isFavorite,
+  setFavoriteModels,
+  toggleFavorite
+} from '@/store/model-favorites'
 
 import { ModelEditSubmenu, resolveFastControl } from './model-edit-submenu'
+
 // Lets the host dropdown (model-pill) hand the panel a way to dismiss itself so
 // clicking a model row commits + closes, while the hover-revealed edit submenu
 // (reasoning/fast) stays open to play with (its items preventDefault on select).
@@ -66,6 +73,12 @@ interface ProviderGroup {
   provider: ModelOptionProvider
 }
 
+/** A resolved favorite entry: the provider + family to render. */
+interface FavoriteEntry {
+  family: ModelFamily
+  provider: ModelOptionProvider
+}
+
 export function ModelMenuPanel({ gateway, onSelectModel, profile = 'default', requestGateway }: ModelMenuPanelProps) {
   const { t } = useI18n()
   const copy = t.shell.modelMenu
@@ -85,6 +98,7 @@ export function ModelMenuPanel({ gateway, onSelectModel, profile = 'default', re
   const defaultEffort = useStore($defaultReasoningEffort) || DEFAULT_REASONING_EFFORT
   const visibleModels = useStore($visibleModels)
   const collapsedProviders = useStore($collapsedProviders)
+  const favorites = useStore($favoriteModels)
 
   const modelOptions = useQuery({
     queryKey: modelOptionsQueryKey(profile, activeSessionId),
@@ -208,12 +222,44 @@ export function ModelMenuPanel({ gateway, onSelectModel, profile = 'default', re
   }
 
   const groups = useMemo(
-    () =>
-      groupModels(pickerProviders, search, { model: optionsModel, provider: optionsProvider }, effectiveVisibleModels),
-    [pickerProviders, search, optionsModel, optionsProvider, effectiveVisibleModels]
-  )
+      () =>
+        groupModels(pickerProviders, search, { model: optionsModel, provider: optionsProvider }, effectiveVisibleModels, favorites),
+      [pickerProviders, search, optionsModel, optionsProvider, effectiveVisibleModels, favorites]
+    )
 
   const q = normalize(search)
+
+  // Compute cross-provider favorite entries, only when not searching.
+  const favoriteEntries = useMemo<FavoriteEntry[]>(() => {
+    if (!favorites || favorites.size === 0 || !pickerProviders) {
+      return []
+    }
+
+    const entries: FavoriteEntry[] = []
+
+    for (const provider of pickerProviders) {
+      const allFamilies = collapseModelFamilies(provider.models ?? [])
+
+      for (const family of allFamilies) {
+        if (isFavorite(favorites, provider.slug, family.id)) {
+          entries.push({ family, provider })
+        }
+      }
+    }
+
+    // Stable sort: alphabetical by provider name, then by model id.
+    entries.sort((a, b) => {
+      const p = a.provider.name.localeCompare(b.provider.name)
+
+      if (p !== 0) {
+        return p
+      }
+
+      return a.family.id.localeCompare(b.family.id)
+    })
+
+    return entries
+  }, [favorites, pickerProviders])
 
   // Presets are searchable rows like everything else — an unfiltered preset
   // sitting under zero model matches would otherwise become the "first match"
@@ -231,10 +277,19 @@ export function ModelMenuPanel({ gateway, onSelectModel, profile = 'default', re
   // stays in the search input throughout: ⌘⇧M → type → ↑/↓ → Enter.
   type KbRow =
     | { family: ModelFamily; key: string; kind: 'family'; provider: ModelOptionProvider }
+    | { family: ModelFamily; key: string; kind: 'fav'; provider: ModelOptionProvider }
     | { key: string; kind: 'moa'; preset: string }
 
   const kbRows = useMemo<KbRow[]>(
     () => [
+      // Favorite rows (only when not searching)
+      ...(!q ? favoriteEntries.map(({ family, provider }): KbRow => ({
+        family,
+        key: `fav:${provider.slug}:${family.id}`,
+        kind: 'fav',
+        provider
+      })) : []),
+      // Provider rows
       ...groups.flatMap(group =>
         collapsedProviders.includes(group.provider.slug) && !search
           ? []
@@ -245,9 +300,10 @@ export function ModelMenuPanel({ gateway, onSelectModel, profile = 'default', re
               provider: group.provider
             }))
       ),
+      // MoA presets
       ...shownMoaPresets.map((preset): KbRow => ({ key: `moa:${preset}`, kind: 'moa', preset }))
     ],
-    [groups, collapsedProviders, search, shownMoaPresets]
+    [groups, collapsedProviders, search, shownMoaPresets, favoriteEntries, q]
   )
 
   const [kbOverride, setKbOverride] = useState<null | number>(null)
@@ -319,6 +375,95 @@ export function ModelMenuPanel({ gateway, onSelectModel, profile = 'default', re
   // Rows are hover-selectable, so they go inert with the pointer (usePointerQuiet).
   const quietRows = pointerQuiet && 'pointer-events-none'
 
+  // ── Render a single model row ─────────────────────────────────────────────
+  // Shared between the Favorites group and regular provider groups.
+  const renderModelRow = (
+    family: ModelFamily,
+    provider: ModelOptionProvider,
+    rowKey: string,
+    isCurrent: boolean,
+    name: string,
+    caps: { fast?: boolean; reasoning?: boolean } | undefined,
+    effEffort: string,
+    effFast: boolean,
+    defaultEffort: string
+  ) => {
+    const fastControl = resolveFastControl(
+      isCurrent ? optionsModel : family.id,
+      provider.models ?? [],
+      caps?.fast ?? false,
+      effFast
+    )
+
+    const meta = [
+      fastControl.kind !== 'none' && fastControl.on ? copy.fast : null,
+      (caps?.reasoning ?? true) ? reasoningEffortLabel(effEffort || defaultEffort) : null
+    ]
+      .filter(Boolean)
+      .join(' ')
+
+    const activate = () => {
+      if (!isCurrent) {
+        void selectFamily(family, provider)
+      }
+
+      closeMenu()
+    }
+
+    const faved = isFavorite(favorites, provider.slug, family.id)
+    const toggleFav = (event: React.MouseEvent) => {
+      event.stopPropagation()
+      event.preventDefault()
+      setFavoriteModels(toggleFavorite($favoriteModels.get(), provider.slug, family.id))
+    }
+
+    return (
+            <DropdownMenuSub key={rowKey}>
+              <DropdownMenuSubTrigger
+                hideChevron
+                onClick={activate}
+                onKeyDown={event => {
+                  if (event.key === 'Enter' || event.key === ' ') {
+                    activate()
+                  }
+                }}
+                {...kbRowProps(rowKey)}
+              >
+                <button
+                  aria-label={faved ? copy.unfavorite : copy.favorite}
+                  className="shrink-0 cursor-pointer text-[0.7rem] leading-none hover:scale-110 transition-transform"
+                  onClick={toggleFav}
+                  tabIndex={-1}
+                  title={faved ? copy.unfavorite : copy.favorite}
+                  type="button"
+                >
+                  {faved ? '★' : '☆'}
+                </button>
+                <span className="min-w-0 flex-1 truncate">
+                  <HighlightMatches query={search} text={name} />
+                  {meta ? <span className="text-(--ui-text-tertiary)"> {meta}</span> : null}
+                </span>
+                {isCurrent ? (
+                  <Codicon className="ml-auto text-foreground" name="check" size="0.75rem" />
+                ) : null}
+              </DropdownMenuSubTrigger>
+              <ModelEditSubmenu
+                defaultEffort={defaultEffort}
+                effort={effEffort}
+                fastControl={fastControl}
+                isActive={isCurrent}
+                model={family.id}
+                onSelectModel={nextModel => switchTo(nextModel, provider.slug)}
+                onSetOptions={patch => {
+                                  setModelPreset(provider.slug, family.id, patch)
+                                }}
+                provider={provider.slug}
+                reasoning={caps?.reasoning ?? true}
+              />
+            </DropdownMenuSub>
+          )
+  }
+
   return (
     <>
       <DropdownMenuSearch
@@ -364,12 +509,47 @@ export function ModelMenuPanel({ gateway, onSelectModel, profile = 'default', re
         <DropdownMenuItem className={dropdownMenuRow} disabled>
           {error}
         </DropdownMenuItem>
-      ) : groups.length === 0 && moaPresets.length === 0 ? (
+      ) : groups.length === 0 && moaPresets.length === 0 && favoriteEntries.length === 0 ? (
         <DropdownMenuItem className={dropdownMenuRow} disabled>
           {copy.noModels}
         </DropdownMenuItem>
       ) : (
         <div className={cn('max-h-[max(150px,30dvh)] overflow-y-auto py-0.5', quietRows)} ref={listRef}>
+          {/* ⭐ Favorites group — cross-provider, shown only when not searching */}
+          {!q && favoriteEntries.length > 0 && (
+            <DropdownMenuGroup className="py-0.5">
+              <DropdownMenuLabel className={dropdownMenuSectionLabel}>
+                ★ {copy.favorites}
+              </DropdownMenuLabel>
+              {favoriteEntries.map(({ family, provider }) => {
+                const activeId =
+                  provider.slug === optionsProvider &&
+                  (optionsModel === family.id || optionsModel === family.fastId)
+                    ? optionsModel
+                    : null
+                const isCurrent = activeId !== null
+                const name = modelDisplayParts(family.id).name
+                const caps = provider.capabilities?.[family.id]
+                const preset = modelPresets[modelPresetKey(provider.slug, family.id)] ?? {}
+                const effEffort = isCurrent ? currentReasoningEffort : (preset.effort ?? '')
+                const effFast = isCurrent ? currentFastMode : (preset.fast ?? false)
+
+                return renderModelRow(
+                  family,
+                  provider,
+                  `fav:${provider.slug}:${family.id}`,
+                  isCurrent,
+                  name,
+                  caps,
+                  effEffort,
+                  effFast,
+                  defaultEffort
+                )
+              })}
+            </DropdownMenuGroup>
+          )}
+
+          {/* Provider groups */}
           {groups.map(group => {
             const slug = group.provider.slug
 
@@ -420,68 +600,16 @@ export function ModelMenuPanel({ gateway, onSelectModel, profile = 'default', re
                     const effEffort = isCurrent ? currentReasoningEffort : (preset.effort ?? '')
                     const effFast = isCurrent ? currentFastMode : (preset.fast ?? false)
 
-                    const fastControl = resolveFastControl(
-                      activeId ?? family.id,
-                      group.provider.models ?? [],
-                      caps?.fast ?? false,
-                      effFast
-                    )
-
-                    const meta = [
-                      fastControl.kind !== 'none' && fastControl.on ? copy.fast : null,
-                      (caps?.reasoning ?? true) ? reasoningEffortLabel(effEffort || defaultEffort) : null
-                    ]
-                      .filter(Boolean)
-                      .join(' ')
-
-                    // Every row is a hover-Edit submenu trigger. Activating it
-                    // (pointer or keyboard) switches to the family's base model and
-                    // restores its preset; the Fast toggle inside swaps to the -fast
-                    // sibling (or flips the speed param). The sub-trigger has no
-                    // `onSelect`, so wire both click and Enter/Space for keyboard parity.
-                    // Clicking the row commits the model and closes the picker; the
-                    // edit submenu (reasoning/fast) is reached by HOVER, so you can
-                    // still tweak those without the click dismissing everything.
-                    const activate = () => {
-                      if (!isCurrent) {
-                        void selectFamily(family, group.provider)
-                      }
-
-                      closeMenu()
-                    }
-
-                    const favKey = `${group.provider.slug}:${family.id}`
-                    return (
-                      <DropdownMenuSub key={favKey}>
-                        <DropdownMenuSubTrigger
-                          hideChevron
-                          onClick={activate}
-                          onKeyDown={event => {
-                            if (event.key === 'Enter' || event.key === ' ') {
-                              activate()
-                            }
-                          }}
-                          {...kbRowProps(favKey)}
-                        >
-                          <span className="min-w-0 flex-1 truncate">
-                            <HighlightMatches query={search} text={name} />
-                            {meta ? <span className="text-(--ui-text-tertiary)"> {meta}</span> : null}
-                          </span>
-                          {isCurrent ? (
-                            <Codicon className="ml-auto text-foreground" name="check" size="0.75rem" />
-                          ) : null}
-                        </DropdownMenuSubTrigger>
-                        <ModelEditSubmenu
-                          effort={effEffort}
-                          fastControl={fastControl}
-                          isActive={isCurrent}
-                          model={family.id}
-                          onSelectModel={nextModel => switchTo(nextModel, group.provider.slug)}
-                          provider={group.provider.slug}
-                          reasoning={caps?.reasoning ?? true}
-                          requestGateway={requestGateway}
-                        />
-                      </DropdownMenuSub>
+                    return renderModelRow(
+                      family,
+                      group.provider,
+                      `${group.provider.slug}:${family.id}`,
+                      isCurrent,
+                      name,
+                      caps,
+                      effEffort,
+                      effFast,
+                      defaultEffort
                     )
                   })}
               </DropdownMenuGroup>
@@ -552,6 +680,7 @@ function groupModels(
   search: string,
   current: { model: string; provider: string },
   visible: Set<string> | null,
+  favorites: Set<string> | null,
 ): ProviderGroup[] {
   const q = normalize(search)
   const groups: ProviderGroup[] = []
@@ -594,11 +723,16 @@ function groupModels(
         ? allFamilies.find(family => family.id === current.model || family.fastId === current.model)?.id
         : undefined
 
-    let families = allFamilies.filter(family => shown.has(family.id) || family.id === activeId)
+    const families = allFamilies.filter(family => shown.has(family.id) || family.id === activeId)
 
+    // Remove favorites from regular groups — they are shown in the Favorites
+    // section at the top instead. Only when not searching.
+    const filtered = !q && favorites?.size
+      ? families.filter(family => !isFavorite(favorites, provider.slug, family.id))
+      : families
 
-    if (families.length > 0) {
-      groups.push({ families, provider })
+    if (filtered.length > 0) {
+      groups.push({ families: filtered, provider })
     }
   }
 

@@ -2160,7 +2160,10 @@ export const zhHant = defineLocale({
       noModels: '找不到模型',
       editModels: '編輯模型…',
       refreshModels: '重新整理模型',
-      fast: '快速'
+      fast: '快速',
+      favorite: '收藏',
+      unfavorite: '取消收藏',
+      favorites: '收藏'
     },
     modelOptions: {
       noOptions: '此模型沒有可用選項',

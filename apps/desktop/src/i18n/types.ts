@@ -1982,6 +1982,7 @@ export interface Translations {
     wasPrice: string
     favorite: string
     unfavorite: string
+    favorites: string
   }
 
   modelVisibility: {
@@ -2003,6 +2004,7 @@ export interface Translations {
       fast: string
       favorite: string
       unfavorite: string
+      favorites: string
     }
     modelOptions: {
       noOptions: string

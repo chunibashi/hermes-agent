@@ -8,10 +8,17 @@ import { modelSearchText } from '@/lib/model-search-text'
 import { currentPickerSelection } from '@/lib/model-status-label'
 import { normalize } from '@/lib/text'
 import type { ModelOptionProvider, ModelPricing } from '@/types/hermes'
+import {
+  $favoriteModels,
+  isFavorite,
+  setFavoriteModels,
+  toggleFavorite
+} from '@/store/model-favorites'
 
 import type { HermesGateway } from '../hermes'
 import { cn } from '../lib/utils'
 import { startManualOnboarding } from '../store/onboarding'
+
 import { InlineNotice } from './notifications'
 import { Button } from './ui/button'
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from './ui/command'
@@ -151,6 +158,8 @@ function ModelResults({
 }) {
   const { t } = useI18n()
   const copy = t.modelPicker
+  const favorites = useStore($favoriteModels)
+
   if (loading) {
     return <LoadingResults />
   }
@@ -182,8 +191,87 @@ function ModelResults({
   // "Add provider" footer button, which opens the full onboarding selector.
   const configured = providers.filter(p => (p.models ?? []).length > 0)
 
+  // Compute cross-provider favorite entries, only when not searching.
+  const favoriteModels: { provider: ModelOptionProvider; model: string }[] = []
+
+  if (!q && favorites && favorites.size > 0) {
+    for (const provider of configured) {
+      for (const model of provider.models ?? []) {
+        if (isFavorite(favorites, provider.slug, model)) {
+          favoriteModels.push({ provider, model })
+        }
+      }
+    }
+
+    // Sort: alphabetical by provider name, then by model id.
+    favoriteModels.sort((a, b) => {
+      const p = a.provider.name.localeCompare(b.provider.name)
+
+      if (p !== 0) {
+        return p
+      }
+
+      return a.model.localeCompare(b.model)
+    })
+  }
+
+  const toggleFavBtn = (provider: ModelOptionProvider, model: string) => (event: React.MouseEvent) => {
+    event.stopPropagation()
+    event.preventDefault()
+    setFavoriteModels(toggleFavorite($favoriteModels.get(), provider.slug, model))
+  }
+
   return (
     <>
+      {/* ⭐ Favorites group — cross-provider, shown only when not searching */}
+      {!q && favoriteModels.length > 0 && (
+        <CommandGroup heading={`★ ${copy.favorites ?? 'Favorites'}`}>
+          {favoriteModels.map(({ provider, model }) => {
+            const isCurrent = model === currentModel && provider.slug === currentProvider
+            const price = provider.pricing?.[model]
+            const locked = new Set(provider.unavailable_models ?? []).has(model)
+            const faved = true
+
+            return (
+              <CommandItem
+                className={cn(
+                  'flex items-center gap-2 pl-6 font-mono',
+                  isCurrent &&
+                    'bg-primary text-primary-foreground data-[selected=true]:bg-primary data-[selected=true]:text-primary-foreground',
+                  locked && 'cursor-not-allowed opacity-45'
+                )}
+                disabled={locked}
+                key={`fav:${provider.slug}:${model}`}
+                onSelect={() => {
+                  if (!locked) {
+                    onSelectModel(provider, model)
+                  }
+                }}
+                value={`${provider.slug}:${model}`}
+              >
+                <button
+                  aria-label={faved ? copy.unfavorite : copy.favorite}
+                  className="shrink-0 cursor-pointer text-[0.7rem] leading-none hover:scale-110 transition-transform"
+                  onClick={toggleFavBtn(provider, model)}
+                  tabIndex={-1}
+                  title={faved ? copy.unfavorite : copy.favorite}
+                  type="button"
+                >
+                  {'★'}
+                </button>
+                <span className="min-w-0 flex-1 truncate">
+                  <HighlightMatches query={search} text={model} />
+                </span>
+                {locked && (
+                  <span className="shrink-0 text-[0.62rem] uppercase tracking-wide opacity-80">{copy.pro}</span>
+                )}
+                <ModelPrice isCurrent={isCurrent} price={price} />
+              </CommandItem>
+            )
+          })}
+        </CommandGroup>
+      )}
+
       {configured.map(provider => {
         // Preserve the backend's curated order — filter in place, no re-sort.
         let models = (provider.models ?? []).filter(m => matches(provider, m))
@@ -192,6 +280,15 @@ function ModelResults({
           return null
         }
 
+        // Remove favorites from regular groups — they are shown in the Favorites
+        // section at the top instead. Only when not searching.
+        if (!q && favorites && favorites.size > 0) {
+          models = models.filter(m => !isFavorite(favorites, provider.slug, m))
+        }
+
+        if (models.length === 0) {
+          return null
+        }
 
         const unavailable = new Set(provider.unavailable_models ?? [])
 
@@ -208,6 +305,7 @@ function ModelResults({
               const isCurrent = model === currentModel && provider.slug === currentProvider
               const price = provider.pricing?.[model]
               const locked = unavailable.has(model)
+              const faved = isFavorite(favorites, provider.slug, model)
 
               return (
                 <CommandItem
@@ -226,6 +324,16 @@ function ModelResults({
                   }}
                   value={`${provider.slug}:${model}`}
                 >
+                  <button
+                    aria-label={faved ? copy.unfavorite : copy.favorite}
+                    className="shrink-0 cursor-pointer text-[0.7rem] leading-none hover:scale-110 transition-transform"
+                    onClick={toggleFavBtn(provider, model)}
+                    tabIndex={-1}
+                    title={faved ? copy.unfavorite : copy.favorite}
+                    type="button"
+                  >
+                    {faved ? '★' : '☆'}
+                  </button>
                   <span className="min-w-0 flex-1 truncate">
                     <HighlightMatches query={search} text={model} />
                   </span>

@@ -2237,7 +2237,10 @@ export const ja = defineLocale({
       noModels: 'モデルが見つかりません',
       editModels: 'モデルを編集…',
       refreshModels: 'モデルを更新',
-      fast: '高速'
+      fast: '高速',
+      favorite: 'お気に入り',
+      unfavorite: 'お気に入り解除',
+      favorites: 'お気に入り'
     },
     modelOptions: {
       noOptions: 'このモデルにはオプションがありません',

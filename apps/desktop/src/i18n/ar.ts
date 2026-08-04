@@ -2026,7 +2026,10 @@ export const ar = defineLocale({
       noModels: 'لا توجد نماذج',
       editModels: 'تحرير النماذج',
       refreshModels: 'تحديث النماذج',
-      fast: 'سريع'
+      fast: 'سريع',
+      favorite: 'تفضيل',
+      unfavorite: 'إلغاء التفضيل',
+      favorites: 'المفضلة'
     },
     modelOptions: {
       noOptions: 'لا توجد خيارات لهذا النموذج',
