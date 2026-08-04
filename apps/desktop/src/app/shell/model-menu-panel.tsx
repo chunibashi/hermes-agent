@@ -39,12 +39,7 @@ import {
 import { $collapsedProviders, toggleCollapsedProvider } from '@/store/provider-collapse'
 import { $defaultReasoningEffort } from '@/store/session'
 import type { ModelOptionProvider, ModelOptionsResponse } from '@/types/hermes'
-import {
-  $favoriteModels,
-  isFavorite,
-  setFavoriteModels,
-  toggleFavorite
-} from '@/store/model-favorites'
+import { $favoriteModels, isFavorite, setFavoriteModels, toggleFavorite } from '@/store/model-favorites'
 
 import { ModelEditSubmenu, resolveFastControl } from './model-edit-submenu'
 
@@ -222,10 +217,16 @@ export function ModelMenuPanel({ gateway, onSelectModel, profile = 'default', re
   }
 
   const groups = useMemo(
-      () =>
-        groupModels(pickerProviders, search, { model: optionsModel, provider: optionsProvider }, effectiveVisibleModels, favorites),
-      [pickerProviders, search, optionsModel, optionsProvider, effectiveVisibleModels, favorites]
-    )
+    () =>
+      groupModels(
+        pickerProviders,
+        search,
+        { model: optionsModel, provider: optionsProvider },
+        effectiveVisibleModels,
+        favorites
+      ),
+    [pickerProviders, search, optionsModel, optionsProvider, effectiveVisibleModels, favorites]
+  )
 
   const q = normalize(search)
 
@@ -283,12 +284,14 @@ export function ModelMenuPanel({ gateway, onSelectModel, profile = 'default', re
   const kbRows = useMemo<KbRow[]>(
     () => [
       // Favorite rows (only when not searching)
-      ...(!q ? favoriteEntries.map(({ family, provider }): KbRow => ({
-        family,
-        key: `fav:${provider.slug}:${family.id}`,
-        kind: 'fav',
-        provider
-      })) : []),
+      ...(!q
+        ? favoriteEntries.map(({ family, provider }): KbRow => ({
+            family,
+            key: `fav:${provider.slug}:${family.id}`,
+            kind: 'fav',
+            provider
+          }))
+        : []),
       // Provider rows
       ...groups.flatMap(group =>
         collapsedProviders.includes(group.provider.slug) && !search
@@ -418,50 +421,47 @@ export function ModelMenuPanel({ gateway, onSelectModel, profile = 'default', re
     }
 
     return (
-            <DropdownMenuSub key={rowKey}>
-              <DropdownMenuSubTrigger
-                hideChevron
-                onClick={activate}
-                onKeyDown={event => {
-                  if (event.key === 'Enter' || event.key === ' ') {
-                    activate()
-                  }
-                }}
-                {...kbRowProps(rowKey)}
-              >
-                <button
-                  aria-label={faved ? copy.unfavorite : copy.favorite}
-                  className="shrink-0 cursor-pointer text-[0.7rem] leading-none hover:scale-110 transition-transform"
-                  onClick={toggleFav}
-                  tabIndex={-1}
-                  title={faved ? copy.unfavorite : copy.favorite}
-                  type="button"
-                >
-                  {faved ? '★' : '☆'}
-                </button>
-                <span className="min-w-0 flex-1 truncate">
-                  <HighlightMatches query={search} text={name} />
-                  {meta ? <span className="text-(--ui-text-tertiary)"> {meta}</span> : null}
-                </span>
-                {isCurrent ? (
-                  <Codicon className="ml-auto text-foreground" name="check" size="0.75rem" />
-                ) : null}
-              </DropdownMenuSubTrigger>
-              <ModelEditSubmenu
-                defaultEffort={defaultEffort}
-                effort={effEffort}
-                fastControl={fastControl}
-                isActive={isCurrent}
-                model={family.id}
-                onSelectModel={nextModel => switchTo(nextModel, provider.slug)}
-                onSetOptions={patch => {
-                                  setModelPreset(provider.slug, family.id, patch)
-                                }}
-                provider={provider.slug}
-                reasoning={caps?.reasoning ?? true}
-              />
-            </DropdownMenuSub>
-          )
+      <DropdownMenuSub key={rowKey}>
+        <DropdownMenuSubTrigger
+          hideChevron
+          onClick={activate}
+          onKeyDown={event => {
+            if (event.key === 'Enter' || event.key === ' ') {
+              activate()
+            }
+          }}
+          {...kbRowProps(rowKey)}
+        >
+          <button
+            aria-label={faved ? copy.unfavorite : copy.favorite}
+            className="shrink-0 cursor-pointer text-[0.7rem] leading-none hover:scale-110 transition-transform"
+            onClick={toggleFav}
+            tabIndex={-1}
+            type="button"
+          >
+            {faved ? '★' : '☆'}
+          </button>
+          <span className="min-w-0 flex-1 truncate">
+            <HighlightMatches query={search} text={name} />
+            {meta ? <span className="text-(--ui-text-tertiary)"> {meta}</span> : null}
+          </span>
+          {isCurrent ? <Codicon className="ml-auto text-foreground" name="check" size="0.75rem" /> : null}
+        </DropdownMenuSubTrigger>
+        <ModelEditSubmenu
+          defaultEffort={defaultEffort}
+          effort={effEffort}
+          fastControl={fastControl}
+          isActive={isCurrent}
+          model={family.id}
+          onSelectModel={nextModel => switchTo(nextModel, provider.slug)}
+          onSetOptions={patch => {
+            setModelPreset(provider.slug, family.id, patch)
+          }}
+          provider={provider.slug}
+          reasoning={caps?.reasoning ?? true}
+        />
+      </DropdownMenuSub>
+    )
   }
 
   return (
@@ -518,13 +518,10 @@ export function ModelMenuPanel({ gateway, onSelectModel, profile = 'default', re
           {/* ⭐ Favorites group — cross-provider, shown only when not searching */}
           {!q && favoriteEntries.length > 0 && (
             <DropdownMenuGroup className="py-0.5">
-              <DropdownMenuLabel className={dropdownMenuSectionLabel}>
-                ★ {copy.favorites}
-              </DropdownMenuLabel>
+              <DropdownMenuLabel className={dropdownMenuSectionLabel}>★ {copy.favorites}</DropdownMenuLabel>
               {favoriteEntries.map(({ family, provider }) => {
                 const activeId =
-                  provider.slug === optionsProvider &&
-                  (optionsModel === family.id || optionsModel === family.fastId)
+                  provider.slug === optionsProvider && (optionsModel === family.id || optionsModel === family.fastId)
                     ? optionsModel
                     : null
                 const isCurrent = activeId !== null
@@ -680,7 +677,7 @@ function groupModels(
   search: string,
   current: { model: string; provider: string },
   visible: Set<string> | null,
-  favorites: Set<string> | null,
+  favorites: Set<string> | null
 ): ProviderGroup[] {
   const q = normalize(search)
   const groups: ProviderGroup[] = []
@@ -727,9 +724,8 @@ function groupModels(
 
     // Remove favorites from regular groups — they are shown in the Favorites
     // section at the top instead. Only when not searching.
-    const filtered = !q && favorites?.size
-      ? families.filter(family => !isFavorite(favorites, provider.slug, family.id))
-      : families
+    const filtered =
+      !q && favorites?.size ? families.filter(family => !isFavorite(favorites, provider.slug, family.id)) : families
 
     if (filtered.length > 0) {
       groups.push({ families: filtered, provider })

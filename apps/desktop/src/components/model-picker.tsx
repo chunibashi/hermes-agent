@@ -8,12 +8,7 @@ import { modelSearchText } from '@/lib/model-search-text'
 import { currentPickerSelection } from '@/lib/model-status-label'
 import { normalize } from '@/lib/text'
 import type { ModelOptionProvider, ModelPricing } from '@/types/hermes'
-import {
-  $favoriteModels,
-  isFavorite,
-  setFavoriteModels,
-  toggleFavorite
-} from '@/store/model-favorites'
+import { $favoriteModels, isFavorite, setFavoriteModels, toggleFavorite } from '@/store/model-favorites'
 
 import type { HermesGateway } from '../hermes'
 import { cn } from '../lib/utils'
@@ -254,7 +249,6 @@ function ModelResults({
                   className="shrink-0 cursor-pointer text-[0.7rem] leading-none hover:scale-110 transition-transform"
                   onClick={toggleFavBtn(provider, model)}
                   tabIndex={-1}
-                  title={faved ? copy.unfavorite : copy.favorite}
                   type="button"
                 >
                   {'★'}
@@ -329,7 +323,6 @@ function ModelResults({
                     className="shrink-0 cursor-pointer text-[0.7rem] leading-none hover:scale-110 transition-transform"
                     onClick={toggleFavBtn(provider, model)}
                     tabIndex={-1}
-                    title={faved ? copy.unfavorite : copy.favorite}
                     type="button"
                   >
                     {faved ? '★' : '☆'}
