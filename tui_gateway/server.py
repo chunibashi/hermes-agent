@@ -9379,7 +9379,6 @@ def _run_prompt_submit(
         agent = session["agent"]
         if agent:
             _sms = getattr(agent, "_session_messages", [])
-            print(f"[PACK-DIAG] sid={sid} session_history={len(history)} agent_msgs={len(_sms)} at _run_prompt_submit start", file=sys.stderr)
         if hasattr(agent, "clear_interrupt"):
             try:
                 agent.clear_interrupt()
