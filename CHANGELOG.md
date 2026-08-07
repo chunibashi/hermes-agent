@@ -2,7 +2,7 @@
 
 Upstream merge: 226 commits from NousResearch/hermes-agent.
 
-## 🌟 Highlights
+### 🌟 Highlights
 
 - **Terminal 隔离加固** — 本地后台执行器放入独立 systemd cgroup，scope 回退/内存上限/退出码校验，Windows 安全进程组销毁
 - **Gateway 会话韧性** — 活动 turn 标记失败原子化，非正常退出后精确恢复 turn，消除歧义恢复清理
