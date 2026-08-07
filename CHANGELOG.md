@@ -1,3 +1,61 @@
+# Changelog — 2026-08-08
+
+Upstream merge: 226 commits from NousResearch/hermes-agent.
+
+## 🌟 Highlights
+
+- **Terminal 隔离加固** — 本地后台执行器放入独立 systemd cgroup，scope 回退/内存上限/退出码校验，Windows 安全进程组销毁
+- **Gateway 会话韧性** — 活动 turn 标记失败原子化，非正常退出后精确恢复 turn，消除歧义恢复清理
+- **Desktop 会话恢复** — stale session 掉线后恢复 checkpoint/图片附件/compress/tile 操作，Files 面板 cwd 去同步修复，workspace-cwd 所有权原子切换
+- **插件可移植化** — 加载/校验 portable agent 组件，MCP 工具 readOnlyHint 信任分级门控，保留不透明 stdio 命令
+- **verify 子系统** — 集成 run-recipe 检测 + 环境清单 + `hermes verify` smoke runner
+- **Cron 可观测性** — `usage_audit.jsonl` token 泄漏埋点，`skip_background_review` 标志
+- **安全** — protected agent-instruction 文件强制写审批；`prompt.submit` 增加 `confirm_truncate` 防误删历史守卫（#80763）
+- **新增能力** — `hermes doctor --live` 真实调用探针；delegate_task 结构化输出 schema；vision_analyze 区域缩放裁剪
+
+## Features
+
+- feat(terminal): isolate local background executors in their own systemd cgroup (#70716)
+- feat(terminal): graceful degradation for remote backend connection failures
+- feat(gateway): session.workspace.move — re-home a stored session's workspace
+- feat(cron): add usage_audit.jsonl logger for cron token leak instrumentation
+- feat(cron): set skip_background_review=True; doc title-generation non-presence
+- feat(agent): add skip_background_review flag to AIAgent constructor
+- feat(plugins): load portable agent components / validate portable agent packages
+- feat(plugins): preserve opaque stdio commands
+- feat(skills): add document-to-action-items (promoted to bundled tier)
+- feat(doctor): add opt-in `hermes doctor --live` real-call backend probes
+- feat(delegation): optional structured-output schema on delegate_task
+- feat(vision): optional region zoom crop on vision_analyze
+- feat(security): protected agent-instruction files always require write approval
+- feat(mcp): trust-tier gating for write-capable MCP tools via readOnlyHint
+- feat(desktop): move a session to another project from its row menu
+- Integrate verify subsystem with the existing verification stack
+
+## Fixes
+
+- fix(gateway): close ambiguous recovery cleanup gaps; make active turn markers failure-atomic; recover exact turns after unclean exits; normalize common repo root separators in git probe
+- fix(terminal): harden scope fallback and memory override; align worker limit with local guard; bound isolated worker memory; make systemd cleanup gateway-safe; serialize systemd scope capability probe; fully-qualified .scope unit name, exit-code check (#70716)
+- fix(desktop): recover checkpoint restore, tile actions, image/file attach, /compress after a stale session drop; rebind Files pane cwd on switch; workspace-cwd ownership; preserve root recovery through StrictMode replay; stop rendering main checkout as duplicate sidebar lane
+- fix(tui_gateway): report a lazy session's own cwd, not the launch dir; refuse unconfirmed truncation (confirm_truncate guard)
+- fix(models): corrupt-at cache rows degrade to live fetch in cached_provider_model_ids
+- fix(plugins): address portable MCP review feedback; harden portable plugin boundaries
+- fix(tools): lazily bring up sandbox for vision_analyze reads
+- fix(dashboard): fold one-field doctor category into general tab
+- fix: Windows-safe process-group teardown in verify runner
+- fix: add Hermes headers to Fireworks provider (#81321)
+
+## Refactor / Chore / Test
+
+- refactor(desktop): one resolver for stale runtime-session recovery
+- refactor: match current assistant-ui lookup errors
+- test(desktop): cover stale-session recovery bug class; cover Files-pane cwd desync bug class
+- test(verify): use valid 2-task batches in schema-rejection tests
+- chore(skills/document-to-action-items): tighten to hardline standards, move to optional
+- chore(relay): require 0.7.1
+- chore: map contributor email
+- fmt(js): `npm run fix` on merge (#81259, #81276)
+
 # Changelog — 2026-08-05
 
 Upstream merge: 63 commits from NousResearch/hermes-agent.
