@@ -2877,6 +2877,11 @@ def _persist_branch_seed(session: dict) -> None:
                     {
                         "role": msg.get("role", "user"),
                         "content": msg.get("content"),
+                        "reasoning": msg.get("reasoning"),
+                        "reasoning_content": msg.get("reasoning_content"),
+                        "reasoning_details": msg.get("reasoning_details"),
+                        "codex_reasoning_items": msg.get("codex_reasoning_items"),
+                        "codex_message_items": msg.get("codex_message_items"),
                         # Preserve the parent's original message timestamps —
                         # append_message would otherwise stamp time.time() and the
                         # branch's copied history would all appear authored "now".
@@ -5069,16 +5074,19 @@ def _probe_config_health(cfg: dict) -> str:
     agent_cfg = cfg.get("agent")
     if isinstance(display_cfg, dict):
         personality = str(display_cfg.get("personality", "") or "").strip().lower()
-        if (
-            personality
-            and personality not in {"default", "none", "neutral"}
-            and isinstance(agent_cfg, dict)
-            and agent_cfg.get("personalities") is None
-        ):
-            warnings.append(
-                "`display.personality` is set but `agent.personalities` is empty/null; "
-                "personality overlay will be skipped."
-            )
+        if personality and personality not in {"default", "none", "neutral"}:
+            try:
+                from hermes_cli.personality import available_personalities
+
+                if personality not in available_personalities(cfg):
+                    warnings.append(
+                        f"`display.personality: {personality}` does not match any "
+                        "built-in or `agent.personalities` entry; personality "
+                        "overlay will be skipped."
+                    )
+            except Exception:
+                pass
+    _ = agent_cfg  # retained for shape parity; built-ins exist without config
     return " ".join(warnings).strip()
 
 
@@ -5946,60 +5954,51 @@ def _wire_callbacks(sid: str):
 
 
 def _render_personality_prompt(value) -> str:
-    if isinstance(value, dict):
-        parts = [value.get("system_prompt", "")]
-        if value.get("tone"):
-            parts.append(f'Tone: {value["tone"]}')
-        if value.get("style"):
-            parts.append(f'Style: {value["style"]}')
-        return "\n".join(p for p in parts if p)
-    return str(value)
+    """Delegates to hermes_cli.personality (single owner of rendering)."""
+    from hermes_cli.personality import render_personality_prompt
+
+    return render_personality_prompt(value)
 
 
 def _available_personalities(cfg: dict | None = None) -> dict:
-    try:
-        from cli import load_cli_config
+    """Built-ins + user overrides, via hermes_cli.personality (single owner)."""
+    from hermes_cli.personality import available_personalities
 
-        return (load_cli_config().get("agent") or {}).get("personalities", {}) or {}
-    except Exception:
-        try:
-            from hermes_cli.config import load_config as _load_full_cfg
-
-            return (_load_full_cfg().get("agent") or {}).get("personalities", {}) or {}
-        except Exception:
-            cfg = cfg or _load_cfg()
-            return (cfg.get("agent") or {}).get("personalities", {}) or {}
+    if cfg is None:
+        cfg = _load_cfg()
+    return available_personalities(cfg)
 
 
 def _validate_personality(value: str, cfg: dict | None = None) -> tuple[str, str]:
-    raw = str(value or "").strip()
-    name = raw.lower()
-    if not name or name in {"none", "default", "neutral"}:
-        return "", ""
+    """Resolve a requested personality against _available_personalities.
 
+    Same contract as hermes_cli.personality.resolve_personality — (name,
+    prompt) or ValueError — but resolves through the module-level
+    _available_personalities so tests (and future gateway-side overrides)
+    keep a single patch point.
+    """
+    from hermes_cli.personality import normalize_personality_name
+
+    name = normalize_personality_name(value)
+    if not name:
+        return "", ""
     personalities = _available_personalities(cfg)
     if name not in personalities:
-        names = sorted(personalities)
-        available = ", ".join(f"`{n}`" for n in names)
-        base = f"Unknown personality: `{raw}`."
-        if available:
-            base += f"\n\nAvailable: `none`, {available}"
-        else:
-            base += "\n\nNo personalities configured."
-        raise ValueError(base)
-
+        names = ", ".join(f"`{n}`" for n in sorted(personalities))
+        raise ValueError(
+            f"Unknown personality: `{str(value).strip()}`.\n\nAvailable: `none`, {names}"
+        )
     return name, _render_personality_prompt(personalities[name])
 
 
 def _prompt_text(value) -> str:
-    """Normalize config prompt values from YAML before handing them to AIAgent."""
-    if value is None:
-        return ""
-    if isinstance(value, str):
-        return value.strip()
-    if isinstance(value, list):
-        return "\n".join(str(item).strip() for item in value if str(item).strip())
-    return str(value).strip()
+    """Normalize config prompt values from YAML before handing them to AIAgent.
+
+    Delegates to hermes_cli.personality (single owner).
+    """
+    from hermes_cli.personality import prompt_text
+
+    return prompt_text(value)
 
 
 def _apply_personality_to_session(
@@ -9869,7 +9868,7 @@ def _run_prompt_submit(
             # sidebar repaints the moment a title lands, rather than waiting
             # for the next list refresh.
             _title_key = session.get("session_key") or sid
-            agent._on_session_title = lambda t, _k=_title_key: _emit(
+            agent._on_session_title = lambda t, _src, _k=_title_key: _emit(
                 "session.title", sid, {"session_id": _k, "title": t}
             )
             result = agent.run_conversation(run_message, **run_kwargs)
@@ -11333,10 +11332,12 @@ def _(rid, params: dict) -> dict:
             elif key == "personality":
                 sid_key = params.get("session_id", "")
                 pname, new_prompt = _validate_personality(str(value or ""), cfg)
-                # Personality text is an in-session overlay. Keep the
-                # user-owned global system prompt intact so changing a
-                # personality cannot destroy manual configuration.
-                _write_config_key("display.personality", pname)
+                # Personality text is an in-session overlay. Persistence goes
+                # through hermes_cli.personality (single owner) and never
+                # touches the user-owned global system prompt.
+                from hermes_cli.personality import persist_personality
+
+                persist_personality(pname)
                 nv = str(value or "none")
                 history_reset, info = _apply_personality_to_session(
                     sid_key, session, new_prompt, pname
@@ -11520,20 +11521,41 @@ def _(rid, params, pdb, conn) -> dict:
     return _ok(rid, {"project": proj.to_dict() if proj else None, "cwd": cwd, "branch": _git_branch_for_cwd(cwd)})
 
 
+def _non_workspace_dirs() -> set[str]:
+    """Directories that are never a workspace, whichever tier proposes them.
+
+    The filesystem root, the user's home, and the directory homes live in —
+    ``/home`` on Linux, ``/Users`` on macOS, ``C:\\Users`` on Windows. Both
+    POSIX spellings are excluded on every host because both are reachable as a
+    cwd anywhere: macOS ships an empty ``/home`` autofs stub, and a container or
+    remote shell hands back Linux paths. Promoting one of these mints a
+    catch-all project that swallows unplaced sessions, and ``/home`` in
+    particular renders as a second row reading "home" next to the Home bucket.
+    """
+    home = os.path.realpath(os.path.expanduser("~"))
+    candidates = (os.sep, home, os.path.dirname(home), "/home", "/Users")
+
+    return {os.path.normcase(os.path.realpath(path)) for path in candidates if path}
+
+
 def _is_repo_junk(root: str) -> bool:
-    """A git root we never auto-surface as a project: the bare home dir or
-    anything under HERMES_HOME (~/.hermes by default) — config/sessions/skills,
-    not a workspace. User-created projects pointing there are still honored."""
+    """A git root we never auto-surface as a project: a non-workspace dir (see
+    :func:`_non_workspace_dirs`) or anything under HERMES_HOME (~/.hermes by
+    default) — config/sessions/skills, not a workspace. User-created projects
+    pointing there are still honored."""
     if not root:
         return True
 
     from hermes_constants import get_hermes_home
 
     real = os.path.realpath(root)
-    home = os.path.realpath(os.path.expanduser("~"))
     hermes_home = os.path.realpath(str(get_hermes_home()))
 
-    return real == home or real == hermes_home or real.startswith(hermes_home + os.sep)
+    return (
+        os.path.normcase(real) in _non_workspace_dirs()
+        or real == hermes_home
+        or real.startswith(hermes_home + os.sep)
+    )
 
 
 def _is_session_cwd_junk(cwd: str) -> bool:
@@ -11541,8 +11563,9 @@ def _is_session_cwd_junk(cwd: str) -> bool:
 
     Unlike discovered git roots, an explicitly selected descendant of
     HERMES_HOME may be an intentional prose/data workspace. The pre-Projects
-    desktop surfaced every such cwd, so exclude only the two broad defaults
-    that would create catch-all projects.
+    desktop surfaced every such cwd, so exclude only the broad defaults that
+    would create catch-all projects: HERMES_HOME itself and the dirs in
+    :func:`_non_workspace_dirs`.
     """
     if not cwd:
         return True
@@ -11550,9 +11573,8 @@ def _is_session_cwd_junk(cwd: str) -> bool:
     from hermes_constants import get_hermes_home
 
     real = os.path.normcase(os.path.realpath(cwd))
-    home = os.path.normcase(os.path.realpath(os.path.expanduser("~")))
     hermes_home = os.path.normcase(os.path.realpath(str(get_hermes_home())))
-    return real == home or real == hermes_home
+    return real in _non_workspace_dirs() or real == hermes_home
 
 
 def _repo_discovery_policy(raw: dict | None = None) -> dict:
@@ -11761,6 +11783,10 @@ def _project_tree_inputs(
         include_children=False,
         exclude_sources=_PROJECT_TREE_EXCLUDED_SOURCES,
         include_archived=False,
+        # `_project_tree_row` keeps ~18 fields and drops the rest, so selecting
+        # the system-prompt blob only to discard it costs tens of MB of B-tree
+        # reads per build on a long-lived database.
+        compact_rows=True,
     )
     sessions = [_project_tree_row(r) for r in rows]
     # Parallel-warm the git cache so build_tree's resolver reads it instead of
@@ -11826,6 +11852,13 @@ def _build_project_tree(
     _DIR_EXISTS_CACHE.clear()
     sessions, projects, discovered, active_id = _project_tree_inputs(
         db, session_limit, include_discovered=include_discovered
+    )
+    # build_tree resolves every declared project folder and every discovered
+    # repo root too, and those paths are not session cwds — without this they
+    # are the one part of the build still probing git one directory at a time.
+    git_probe.warm_roots(
+        [str(f.get("path") or "") for p in projects for f in (p.get("folders") or [])]
+        + [str(r.get("root") or "") for r in discovered]
     )
     tree = project_tree.build_tree(
         projects,
@@ -12733,6 +12766,12 @@ def _mirror_slash_side_effects(sid: str, session: dict, command: str) -> str:
             return result.get("warning", "")
         elif name == "personality" and arg and agent:
             pname, new_prompt = _validate_personality(arg, _load_cfg())
+            # Persist through the single owner so this surface can never
+            # drift from the others (the old TUI slash path applied the
+            # overlay in-session but skipped persistence entirely).
+            from hermes_cli.personality import persist_personality
+
+            persist_personality(pname)
             _apply_personality_to_session(sid, session, new_prompt, pname)
         elif name == "prompt" and agent:
             cfg = _load_cfg()

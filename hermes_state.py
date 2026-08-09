@@ -3453,6 +3453,8 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         cwd: str = None,
         profile_name: str = None,
         git_repo_root: str = None,
+        origin_json: str = None,
+        display_name: str = None,
     ) -> None:
         """Insert a session row, enriching NULL metadata on conflict.
 
@@ -3495,9 +3497,10 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 """INSERT INTO sessions (
                    id, source, user_id, session_key, chat_id, chat_type, thread_id,
                    model, model_config, system_prompt, system_prompt_hash,
-                   parent_session_id, cwd, profile_name, git_repo_root, started_at
+                   parent_session_id, cwd, profile_name, git_repo_root,
+                   origin_json, display_name, started_at
                 )
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT(id) DO UPDATE SET
                        model = COALESCE(sessions.model, excluded.model),
                        model_config = COALESCE(sessions.model_config, excluded.model_config),
@@ -3518,7 +3521,9 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                        parent_session_id = COALESCE(sessions.parent_session_id, excluded.parent_session_id),
                        cwd = COALESCE(sessions.cwd, excluded.cwd),
                        profile_name = COALESCE(sessions.profile_name, excluded.profile_name),
-                       git_repo_root = COALESCE(sessions.git_repo_root, excluded.git_repo_root)""",
+                       git_repo_root = COALESCE(sessions.git_repo_root, excluded.git_repo_root),
+                       origin_json = COALESCE(sessions.origin_json, excluded.origin_json),
+                       display_name = COALESCE(sessions.display_name, excluded.display_name)""",
                 (
                     session_id,
                     source,
@@ -3534,6 +3539,8 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                     cwd,
                     profile_name,
                     git_repo_root,
+                    origin_json,
+                    display_name,
                     time.time(),
                 ),
             )
@@ -3637,6 +3644,15 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         on one routing peer when an explicit gateway resume moves its tip to a
         different lane. Normal per-turn metadata refreshes update only the
         supplied row.
+
+        Self-healing (#82616): when the target row does not exist yet — the
+        gateway's ``create_session`` write failed and was deferred, or a
+        crash landed between routing publication and row creation — this
+        recorder INSERTs the row with the full identity instead of silently
+        no-opping. Every per-turn peer refresh is therefore a repair
+        opportunity: a gateway session row can no longer be first-created by
+        an identity-less lazy writer (``update_token_counts`` /
+        ``record_auxiliary_usage``) and stay unroutable forever.
         """
         if not session_id or not session_key:
             return
@@ -3692,6 +3708,43 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                    {target_clause}""",
                 query_params,
             )
+            # Self-heal (#82616): the UPDATE is a silent no-op when the row
+            # is missing (create_session failed earlier, or a crash landed
+            # between routing publication and row creation). Insert it with
+            # the full identity so the session is durably routable — never
+            # leave first-creation to an identity-less lazy writer.
+            if not include_compression_ancestors:
+                cur = conn.execute(
+                    "SELECT 1 FROM sessions WHERE id = ? LIMIT 1", (session_id,)
+                )
+                if cur.fetchone() is None:
+                    conn.execute(
+                        """INSERT INTO sessions (
+                               id, source, user_id, session_key, chat_id,
+                               chat_type, thread_id, display_name, origin_json,
+                               started_at
+                           )
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                           ON CONFLICT(id) DO UPDATE SET
+                               session_key = COALESCE(sessions.session_key, excluded.session_key),
+                               chat_id = COALESCE(sessions.chat_id, excluded.chat_id),
+                               chat_type = COALESCE(sessions.chat_type, excluded.chat_type),
+                               thread_id = COALESCE(sessions.thread_id, excluded.thread_id),
+                               display_name = COALESCE(sessions.display_name, excluded.display_name),
+                               origin_json = COALESCE(sessions.origin_json, excluded.origin_json)""",
+                        (
+                            session_id,
+                            source,
+                            user_id,
+                            session_key,
+                            chat_id,
+                            chat_type,
+                            thread_id,
+                            display_name,
+                            origin_json,
+                            time.time(),
+                        ),
+                    )
 
         self._execute_write(_do)
 
@@ -3900,6 +3953,15 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         (dashboard viewer disconnect before #60609) are treated as recoverable;
         explicit conversation boundaries such as /new, /resume switches, and
         compression splits are not.
+
+        Ordering and emptiness (#82616): candidates are ranked by actual
+        conversation recency (``last_activity_at``, falling back to
+        ``started_at``) — ``started_at`` alone resurrected days-old zombie
+        rows over the live conversation. Rows with messages are preferred,
+        but an empty keyed row is still returned rather than ``None``:
+        returning ``None`` mints a brand-new session id, which is a worse
+        outcome than resuming an empty-but-correctly-keyed row (and "empty"
+        may just mean the transcript lives under a compression child).
         """
         if not session_key:
             return None
@@ -3908,16 +3970,17 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 """
                 SELECT s.*,
                        COALESCE(sp.prompt, s.system_prompt)
-                           AS _system_prompt_resolved
+                           AS _system_prompt_resolved,
+                       (COALESCE(s.message_count, 0) > 0 OR EXISTS (
+                           SELECT 1 FROM messages WHERE messages.session_id = s.id LIMIT 1
+                       )) AS _has_messages
                 FROM sessions s
                 LEFT JOIN system_prompts sp ON sp.hash = s.system_prompt_hash
                 WHERE s.session_key = ?
                   AND s.source = ?
                   AND (s.ended_at IS NULL OR s.end_reason IN ('agent_close', 'ws_orphan_reap'))
-                  AND (COALESCE(s.message_count, 0) > 0 OR EXISTS (
-                      SELECT 1 FROM messages WHERE messages.session_id = s.id LIMIT 1
-                  ))
-                ORDER BY s.started_at DESC
+                ORDER BY _has_messages DESC,
+                         COALESCE(s.last_activity_at, s.started_at) DESC
                 LIMIT 1
                 """,
                 (session_key, source),
@@ -3934,7 +3997,10 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 """
                 SELECT s.*,
                        COALESCE(sp.prompt, s.system_prompt)
-                           AS _system_prompt_resolved
+                           AS _system_prompt_resolved,
+                       (COALESCE(s.message_count, 0) > 0 OR EXISTS (
+                           SELECT 1 FROM messages WHERE messages.session_id = s.id LIMIT 1
+                       )) AS _has_messages
                 FROM sessions s
                 LEFT JOIN system_prompts sp ON sp.hash = s.system_prompt_hash
                 WHERE s.source = ?
@@ -3946,7 +4012,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                   AND (COALESCE(s.message_count, 0) > 0 OR EXISTS (
                       SELECT 1 FROM messages WHERE messages.session_id = s.id LIMIT 1
                   ))
-                ORDER BY s.started_at DESC
+                ORDER BY COALESCE(s.last_activity_at, s.started_at) DESC
                 LIMIT 1
                 """,
                 (source, user_id, chat_id, chat_type, thread_id),
@@ -7016,6 +7082,28 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             return None
         return meta
 
+    @staticmethod
+    def _reasoning_json_text(value: Any) -> Optional[str]:
+        """Serialize a structured reasoning field for its TEXT column.
+
+        ``reasoning_details`` / ``codex_reasoning_items`` / ``codex_message_items``
+        arrive as list/dict structures from the live runtime, but callers that
+        round-trip stored rows — ``get_messages`` straight into
+        ``replace_messages``, e.g. the POST /api/sessions/{id}/fork handler —
+        hand back the raw TEXT these columns already hold, because
+        ``get_messages`` only deserializes ``content`` and ``tool_calls``.
+        Re-dumping that TEXT double-encodes it, and the forked session's next
+        ``get_messages_as_conversation`` json.loads then yields the inner
+        string instead of the original list, so every reasoning-replay consumer
+        (all of which check ``isinstance(..., list)``) silently drops it.
+        Strings are therefore stored as-is; structures are dumped.
+        """
+        if not value:
+            return None
+        if isinstance(value, str):
+            return value
+        return json.dumps(value)
+
     def append_message(
         self,
         session_id: str,
@@ -7064,18 +7152,9 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         # context role/content replayed to providers.
         display_metadata_json = self._encode_display_metadata(display_metadata)
         # Serialize structured fields to JSON before entering the write txn
-        reasoning_details_json = (
-            json.dumps(reasoning_details)
-            if reasoning_details else None
-        )
-        codex_items_json = (
-            json.dumps(codex_reasoning_items)
-            if codex_reasoning_items else None
-        )
-        codex_message_items_json = (
-            json.dumps(codex_message_items)
-            if codex_message_items else None
-        )
+        reasoning_details_json = self._reasoning_json_text(reasoning_details)
+        codex_items_json = self._reasoning_json_text(codex_reasoning_items)
+        codex_message_items_json = self._reasoning_json_text(codex_message_items)
         # tool_calls may arrive as a Python list (from the live agent) or
         # as a JSON string (from import/export). Parse first to avoid
         # double-encoding.
@@ -7510,15 +7589,9 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             codex_message_items = (
                 msg.get("codex_message_items") if role == "assistant" else None
             )
-            reasoning_details_json = (
-                json.dumps(reasoning_details) if reasoning_details else None
-            )
-            codex_items_json = (
-                json.dumps(codex_reasoning_items) if codex_reasoning_items else None
-            )
-            codex_message_items_json = (
-                json.dumps(codex_message_items) if codex_message_items else None
-            )
+            reasoning_details_json = self._reasoning_json_text(reasoning_details)
+            codex_items_json = self._reasoning_json_text(codex_reasoning_items)
+            codex_message_items_json = self._reasoning_json_text(codex_message_items)
             # tool_calls may arrive as a Python list (from the live agent)
             # or as a JSON string (from import_sessions / export_session,
             # which store it as TEXT). json.dumps on an already-serialized
@@ -7821,6 +7894,31 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 msg["display_metadata"] = self._decode_display_metadata(msg["display_metadata"])
             result.append(msg)
         return result
+
+    def find_pr_url_messages(self, session_ids: List[str]) -> List[Dict[str, Any]]:
+        """Tool results in these sessions that mention a GitHub PR url.
+
+        A candidate scan, deliberately loose: it hands back every tool result
+        containing ``/pull/`` and leaves the caller to decide which ones make a
+        claim (see the desktop's PR recovery, which only accepts an output that
+        is a bare PR url — the signature of ``gh pr create``). Ordered
+        oldest-first per session so the caller can take the last match.
+        """
+        found: List[Dict[str, Any]] = []
+        ids = [s for s in session_ids if s]
+        for start in range(0, len(ids), 900):  # SQLite's bound-variable ceiling.
+            chunk = ids[start : start + 900]
+            placeholders = ",".join("?" * len(chunk))
+            with self._read_ctx() as conn:
+                rows = conn.execute(
+                    f"""SELECT session_id, content FROM messages
+                        WHERE session_id IN ({placeholders})
+                          AND role = 'tool' AND content LIKE '%/pull/%'
+                        ORDER BY id ASC""",
+                    chunk,
+                ).fetchall()
+            found.extend({"session_id": row[0], "content": row[1]} for row in rows)
+        return found
 
     def get_messages_around(
         self,
