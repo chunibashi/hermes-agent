@@ -1445,15 +1445,17 @@ class QQAdapter(BasePlatformAdapter):
         # users; non-write users get them converted to context-only.
         raw_text = text.strip()
         is_slash_cmd = raw_text.startswith("/") and member_openid
+        # Compute write permission once, reused for slash guard and
+        # non-write permission instruction below.
+        write_allowed = False
+        env_write = os.environ.get("QQ_WRITE_ALLOWED_USERS", "").strip()
+        if env_write:
+            allowed = {u.strip().lower() for u in env_write.split(",") if u.strip()}
+            write_allowed = "*" in allowed or member_openid.strip().lower() in allowed
+        else:
+            # No explicit write list: fall back to QQ_ALLOWED_USERS
+            write_allowed = user_allowed
         if is_slash_cmd:
-            write_allowed = False
-            env_write = os.environ.get("QQ_WRITE_ALLOWED_USERS", "").strip()
-            if env_write:
-                allowed = {u.strip().lower() for u in env_write.split(",") if u.strip()}
-                write_allowed = "*" in allowed or member_openid.strip().lower() in allowed
-            else:
-                # No explicit write list: fall back to QQ_ALLOWED_USERS
-                write_allowed = user_allowed
             if not write_allowed:
                 ts = timestamp.split("+")[0].split("T")[1] if "+" in timestamp else timestamp[:19]
                 logger.warning(
@@ -1478,6 +1480,15 @@ class QQAdapter(BasePlatformAdapter):
             # Slash commands are excluded — they must keep their leading "/"
             # for the gateway slash parser.
             text = f"[{sender_label}] {text}"
+            # Non-write-allowed users: append a system instruction so the
+            # agent does not attempt write tools (avoiding wasted API calls
+            # that would be blocked by qq-write-guard).
+            if not write_allowed:
+                text += (
+                    "\n\n[系统指令] 该用户没有文件写入权限。"
+                    "如果用户要求创建/修改文件、执行代码、或运行终端命令，"
+                    "直接回复「你没有权限」即可，不要尝试使用写工具。"
+                )
 
         self._chat_type_map[group_openid] = "group"
         event = MessageEvent(
