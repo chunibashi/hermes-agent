@@ -244,6 +244,12 @@ class QQAdapter(BasePlatformAdapter):
         self._group_allow_from = _coerce_list(
             extra.get("group_allow_from") or extra.get("groupAllowFrom")
         )
+        # Per-group *user* read ACL (independent of QQ_ALLOWED_USERS, which
+        # remains the global talk gate). When set, only these openids may
+        # receive responses in group chats; everyone else is suppressed.
+        self._group_read_users = _coerce_list(
+            extra.get("group_read_users") or extra.get("groupReadUsers")
+        )
 
         # Connection state
         self._session: Optional[aiohttp.ClientSession] = None
@@ -1358,16 +1364,41 @@ class QQAdapter(BasePlatformAdapter):
         # User-level ACL: non-allowed users' messages enter AI context
         # but with suppression flag so send() drops the response.
         member_openid = str(author.get("member_openid", ""))
-        user_allowed = self._is_user_allowed(member_openid)
+        # Group read ACL: when configured, it *overrides* QQ_ALLOWED_USERS for
+        # group response decisions (QQ_ALLOWED_USERS stays the global talk gate
+        # and is untouched). If set (env QQ_GROUP_READ_USERS or config
+        # extra.group_read_users), only listed openids receive a response in
+        # groups; everyone else is suppressed. If unset, fall back to the
+        # existing QQ_ALLOWED_USERS behavior (zero behavior change).
+        if self._group_read_enabled:
+            user_allowed = self._is_group_user_read_allowed(member_openid)
+        else:
+            user_allowed = self._is_user_allowed(member_openid)
         # Extract nickname from QQ API member.nick field
         _member = d.get("member") if isinstance(d.get("member"), dict) else {}
         nick = str(_member.get("nick", "")) or str(author.get("username", "")) or ""
         sender_label = nick[:20] if nick else member_openid[:8]
+        # Always log every group speaker's identity so the operator can
+        # discover member_openids to populate QQ_GROUP_READ_USERS /
+        # QQ_ALLOWED_USERS from gateway.log. Logged at INFO regardless of the
+        # allow/deny outcome below.
+        logger.info(
+            "[QQBot:%s] group speaker: group_openid=%s member_openid=%s "
+            "nick=%r read_allowed=%s (read_gate=%s)",
+            self._app_id,
+            group_openid,
+            member_openid,
+            nick or "",
+            user_allowed,
+            "QQ_GROUP_READ_USERS" if self._group_read_enabled else "QQ_ALLOWED_USERS",
+        )
         if not user_allowed:
             logger.warning(
-                "[QQBot:%s] User not in QQ_ALLOWED_USERS: member_openid=%s; "
+                "[QQBot:%s] User not in %s: member_openid=%s; "
                 "message visible to AI, response suppressed",
-                self._app_id, member_openid,
+                self._app_id,
+                "QQ_GROUP_READ_USERS" if self._group_read_users else "QQ_ALLOWED_USERS",
+                member_openid,
             )
             self._suppress_response[group_openid] = True
         else:
@@ -1420,6 +1451,7 @@ class QQAdapter(BasePlatformAdapter):
             source=self.build_source(
                 chat_id=group_openid,
                 user_id=group_openid,
+                user_id_alt=member_openid,
                 chat_type="group",
             ),
             text=text,
@@ -2631,8 +2663,12 @@ class QQAdapter(BasePlatformAdapter):
         """
         self._next_msg_seq(reply_to or group_openid)
         body = self._build_text_body(content, reply_to)
-        if reply_to:
-            body["msg_id"] = reply_to
+        # 重要修复：不把 reply_to 写进 body["msg_id"]。
+        # QQ Bot API 对带 msg_id（消息引用）的群消息存在可见性 Bug：当被引用的
+        # 消息来自非机器人 owner 的普通成员（如 QQ_GROUP_READ_USERS 放行的成员）
+        # 时，QQ 端不会把该回复投递给消息引用链上的普通成员，导致对方看不到回复。
+        # 去掉 msg_id 后改为纯群广播，全员可见（实测验证：千葉花咲能看到）。
+        # 若未来 QQ 修复该行为，可恢复：body["msg_id"] = reply_to
         if keyboard is not None:
             body["keyboard"] = keyboard.to_dict()
 
@@ -3282,6 +3318,37 @@ class QQAdapter(BasePlatformAdapter):
         if self._group_policy == "open":
             return True
         return False
+
+    def _group_read_enabled(self) -> bool:
+        """True when the group read ACL is active (env or config configured)."""
+        if self._group_read_users:
+            return True
+        env_users = os.environ.get("QQ_GROUP_READ_USERS", "").strip()
+        return bool(env_users)
+
+    def _is_group_user_read_allowed(self, user_id: str) -> bool:
+        """Group-only per-user read ACL, independent of QQ_ALLOWED_USERS.
+
+        Reads (in priority order): the ``QQ_GROUP_READ_USERS`` env var, then
+        the ``extra.group_read_users`` config list. A ``*`` entry allows
+        everyone. Callers must only invoke this when ``_group_read_enabled``
+        is True; when unconfigured it returns True so the existing
+        ``_is_user_allowed`` path is used instead (zero behavior change).
+        """
+        if not self._group_read_enabled:
+            return True
+        env_users = os.environ.get("QQ_GROUP_READ_USERS", "").strip()
+        if env_users:
+            allowed = {u.strip().lower() for u in env_users.split(",") if u.strip()}
+            if allowed:
+                return "*" in allowed or user_id.strip().lower() in allowed
+        # Fall back to the config list (already coerced/lowercased).
+        if self._group_read_users:
+            return (
+                "*" in self._group_read_users
+                or user_id.strip().lower() in self._group_read_users
+            )
+        return True
 
     def _is_user_allowed(self, user_id: str) -> bool:
         """User-level ACL: read QQ_ALLOWED_USERS env var, fallback to allow-all."""

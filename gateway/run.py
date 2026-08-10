@@ -1016,17 +1016,6 @@ def _startup_restore_drain_timeout_secs() -> float:
         return float(_STARTUP_RESTORE_DRAIN_TIMEOUT_SECS_DEFAULT)
 
 
-def _as_thread_info(info: Any) -> Optional[Tuple[str, str]]:
-    """*info* as a (thread_id, initial_name) pair, or None if it isn't one.
-
-    The pair comes back across the relay connector boundary, so its shape is
-    the connector's word rather than ours.
-    """
-    if isinstance(info, tuple) and len(info) == 2 and all(isinstance(x, str) for x in info):
-        return cast(Tuple[str, str], info)
-    return None
-
-
 def _float_env(name: str, default: float) -> float:
     """Read an env var as float, falling back to ``default`` on typos/empty.
 
@@ -3052,23 +3041,6 @@ def _is_control_interrupt_message(message: Optional[str]) -> bool:
     return normalized in _CONTROL_INTERRUPT_MESSAGES
 
 
-def _strip_response_attachments_for_direct_send(response: str, adapter) -> str:
-    """Return the visible text portion of a response before direct send().
-
-    Queued follow-up resends only replay explicit ``MEDIA:`` attachments in
-    this path. Keep bare local paths and ordinary image URLs visible because
-    the post-stream uploader intentionally ignores them (#20834).
-
-    Do not apply a broad ``MEDIA:`` regex after ``extract_media()`` — the
-    extractor deliberately preserves protected code/inline spans and
-    unsupported or unvalidated tags in the cleaned text.
-    """
-    _, cleaned = adapter.extract_media(response)
-    cleaned = cleaned.replace("[[audio_as_voice]]", "").strip()
-    cleaned = cleaned.replace("[[as_document]]", "").strip()
-    return cleaned.strip()
-
-
 def _skill_slug_from_frontmatter(skill_md: Path) -> tuple[str | None, str | None]:
     """Derive the /command slug and declared frontmatter name from a SKILL.md.
 
@@ -4471,15 +4443,9 @@ class TurnRunner:
             session_id = getattr(agent, "session_id", None)
             source = ctx.source
 
-            # Both lanes below spend a rate-limited platform call per title, so
-            # they take the model's title and skip the derived one — see
-            # TitleCallback. Renaming twice lands on the same name at twice the
-            # cost, and Discord's 2-per-10-minutes channel budget can spend
-            # itself on the throwaway and drop the one worth showing.
             if self._runner._is_telegram_topic_lane(source):
-                agent._on_session_title = lambda title, title_source: (
-                    title_source == "llm"
-                    and self._runner._schedule_telegram_topic_title_rename(
+                agent._on_session_title = lambda title: (
+                    self._runner._schedule_telegram_topic_title_rename(
                         source, session_id, title,
                     )
                 )
@@ -4494,9 +4460,8 @@ class TurnRunner:
                 # fire time (staging repro 2026-07-31: gating registration on
                 # the cache read meant it never registered and no
                 # thread_rename op was ever sent).
-                agent._on_session_title = lambda title, title_source: (
-                    title_source == "llm"
-                    and self._runner._schedule_discord_semantic_thread_rename(
+                agent._on_session_title = lambda title: (
+                    self._runner._schedule_discord_semantic_thread_rename(
                         source, session_id, title,
                     )
                 )
@@ -7645,20 +7610,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         return parse_idle_timeout_seconds(raw)
 
     def _restart_loop_guard_config(self) -> tuple:
-        """Return ``(max_restarts, window_seconds, max_gap_seconds)`` for the
-        auto-resume restart-loop breaker (#30719, defense-3), read from
+        """Return ``(max_restarts, window_seconds)`` for the auto-resume
+        restart-loop breaker (#30719, defense-3), read from
         ``gateway.restart_loop_guard`` in config.yaml with the module defaults
         as fallback. ``max_restarts <= 0`` disables the breaker.
-
-        ``max_gap_seconds`` is the longest spacing between two consecutive
-        restart-interrupted boots that still counts them as the same loop, so
-        a crash cycle slower than ``window_seconds`` stays visible (#81642).
         """
         from gateway import restart_loop_guard as _rlg
 
         max_restarts = _rlg.DEFAULT_MAX_RESTARTS
         window_seconds = _rlg.DEFAULT_WINDOW_SECONDS
-        max_gap_seconds = _rlg.DEFAULT_MAX_GAP_SECONDS
         try:
             user_cfg = _load_gateway_config()
             gw = user_cfg.get("gateway") if isinstance(user_cfg, dict) else None
@@ -7668,14 +7628,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     max_restarts = rlg["max_restarts"]
                 if isinstance(rlg.get("window_seconds"), int) and rlg["window_seconds"] > 0:
                     window_seconds = rlg["window_seconds"]
-                if (
-                    isinstance(rlg.get("max_gap_seconds"), int)
-                    and rlg["max_gap_seconds"] > 0
-                ):
-                    max_gap_seconds = rlg["max_gap_seconds"]
         except Exception:  # noqa: BLE001
             pass
-        return max_restarts, window_seconds, max_gap_seconds
+        return max_restarts, window_seconds
 
     def _scale_to_zero_should_arm(self) -> bool:
         """Whether to start the idle watcher (D1/D11/§3.4(1))."""
@@ -10695,10 +10650,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             try:
                 from gateway import restart_loop_guard as _rlg
 
-                _max_restarts, _window, _max_gap = self._restart_loop_guard_config()
-                if _rlg.check_and_record(
-                    _max_restarts, _window, max_gap_seconds=_max_gap
-                ):
+                _max_restarts, _window = self._restart_loop_guard_config()
+                if _rlg.check_and_record(_max_restarts, _window):
                     return 0
             except Exception as exc:  # noqa: BLE001 — breaker must fail OPEN
                 logger.debug("Restart-loop guard check skipped: %s", exc)
@@ -12187,6 +12140,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     if not await self.async_session_store._is_session_expired(entry):
                         continue
                     _expired_entries.append((key, entry))
+                    _parts = key.split(":")
+                    _plat = _parts[2] if len(_parts) > 2 else "unknown"
+                    logger.info(
+                        "RESET_DIAG watcher: session_key=%s platform=%s expiry_finalized_before=%s is_expired=True",
+                        key, _plat, entry.expiry_finalized,
+                    )
 
                 if _expired_entries:
                     # Extract platform names from session keys for a compact summary.
@@ -16753,11 +16712,25 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         _msg_preview = (event.text or "")[:80].replace("\n", " ")
         _reply_id = getattr(event, "reply_to_message_id", None)
         _reply_txt = (getattr(event, "reply_to_text", None) or "")[:80].replace("\n", " ")
-        logger.info(
-            "inbound message: platform=%s user=%s chat=%s msg=%r reply_to_id=%s reply_to_text=%r",
-            _platform_name, source.user_name or source.user_id or "unknown",
-            source.chat_id or "unknown", _msg_preview, _reply_id, _reply_txt,
-        )
+        # For group chats the session's user_id is the *group*/chat id (so
+        # replies route back to the group), while the real speaker lives in
+        # user_id_alt. Surface both so the log clearly shows who actually
+        # sent the message (otherwise user= and chat= look identical in QQ
+        # groups). user_name is preferred when present (DMs).
+        _log_user = source.user_name or source.user_id or "unknown"
+        _log_user_alt = getattr(source, "user_id_alt", None)
+        if _log_user_alt and _log_user_alt != source.user_id:
+            logger.info(
+                "inbound message: platform=%s user=%s user_alt=%s chat=%s msg=%r reply_to_id=%s reply_to_text=%r",
+                _platform_name, _log_user, _log_user_alt,
+                source.chat_id or "unknown", _msg_preview, _reply_id, _reply_txt,
+            )
+        else:
+            logger.info(
+                "inbound message: platform=%s user=%s chat=%s msg=%r reply_to_id=%s reply_to_text=%r",
+                _platform_name, _log_user,
+                source.chat_id or "unknown", _msg_preview, _reply_id, _reply_txt,
+            )
 
         # Get or create session
         # Topic-mode DMs: rewrite a stale/foreign thread_id to the user's
@@ -19855,7 +19828,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         response: str,
         event: MessageEvent,
         adapter,
-        thread_metadata: Optional[Dict[str, Any]] = None,
     ) -> None:
         """Extract explicit MEDIA: tags from a response and deliver them.
 
@@ -19902,14 +19874,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # stale inspected content), not an attachment request.
             adapter.extract_images(cleaned)
 
-            _thread_meta = (
-                dict(thread_metadata)
-                if thread_metadata is not None
-                else self._thread_metadata_for_source(
-                    event.source,
-                    self._reply_anchor_for_event(event),
-                )
-            )
+            _thread_meta = self._thread_metadata_for_source(event.source, self._reply_anchor_for_event(event))
 
             _VIDEO_EXTS = {'.mp4', '.mov', '.avi', '.mkv', '.webm', '.3gp'}
             _IMAGE_EXTS = {'.jpg', '.jpeg', '.png', '.webp', '.gif'}
@@ -19967,44 +19932,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         except Exception as e:
             logger.warning("Post-stream media extraction failed: %s", e)
 
-    async def _deliver_queued_first_response(
-        self,
-        response: str,
-        source: SessionSource,
-        adapter,
-        metadata: Optional[Dict[str, Any]] = None,
-        event_message_id: Optional[str] = None,
-        text_already_delivered: bool = False,
-        deliver_media: bool = True,
-    ) -> None:
-        """Deliver a queued response using the normal text+attachment split."""
-        if not text_already_delivered:
-            text_content = _strip_response_attachments_for_direct_send(response, adapter)
-            if text_content:
-                await adapter.send(
-                    source.chat_id,
-                    text_content,
-                    metadata=metadata,
-                )
 
-        # Failed turns still deliver their (normalized failure) text above,
-        # but must not upload attachments as if the turn succeeded — mirrors
-        # the ``not agent_result.get("failed")`` guard on the completed-turn
-        # delivery path.
-        if not deliver_media:
-            return
-
-        synthetic_event = MessageEvent(
-            text="",
-            source=source,
-            message_id=event_message_id,
-        )
-        await self._deliver_media_from_response(
-            response,
-            synthetic_event,
-            adapter,
-            thread_metadata=metadata,
-        )
 
     async def _run_background_task(
         self,
@@ -20411,34 +20339,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if not callable(info_fn):
             return None
         try:
-            return _as_thread_info(info_fn(str(source.chat_id)))
-        except Exception:
+            info = info_fn(str(source.chat_id))
+            if (
+                isinstance(info, tuple)
+                and len(info) == 2
+                and all(isinstance(x, str) for x in info)
+            ):
+                return cast(Tuple[str, str], info)
             return None
-
-    async def _await_relay_auto_thread_info(
-        self, source: SessionSource
-    ) -> Optional[Tuple[str, str]]:
-        """``_relay_auto_thread_info``, waited out until this turn delivers.
-
-        The legacy send-result path can only answer once the reply is sent, and
-        the caller asks at title time — one turn early. The adapter answers on
-        the send either way, so the timeout is only a backstop for a turn that
-        never sends at all; the turn's own inactivity limit is exactly how long
-        that turn could still be alive.
-        """
-        # The connector-stamped prospective id is known at ingest, so most
-        # sessions answer here and never wait at all.
-        known = self._relay_auto_thread_info(source)
-        if known is not None:
-            return known
-        adapter = self._adapter_for_source(source)
-        wait_fn = getattr(adapter, "wait_for_auto_thread_info", None)
-        if not callable(wait_fn) or not source.chat_id:
-            return None
-        # 0 means the operator disabled the turn limit; the backstop still needs one.
-        timeout = _float_env("HERMES_AGENT_TIMEOUT", 1800) or 1800
-        try:
-            return _as_thread_info(await wait_fn(str(source.chat_id), timeout))
         except Exception:
             return None
 
@@ -20474,15 +20382,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if relay_info is None and not await asyncio.to_thread(
             self._is_discord_auto_thread_lane, source
         ):
-            # Relay title turn with no feedback captured at schedule time: the
-            # title comes off the user's opening message, so it beats the
-            # delivery that produces the connector's send-result feedback
-            # (thread_id + initial name) by the whole length of the turn. Wait
-            # on the adapter for that send rather than guessing how long the
-            # turn will take.
+            # Relay title turn with no feedback captured at schedule time:
+            # the auto-title thread races the delivery that produces the
+            # connector's send-result feedback (thread_id + initial name).
+            # Poll the adapter cache briefly before giving up — delivery is
+            # typically milliseconds-to-seconds behind the title.
             if not self._is_relay_discord_channel_lane(source):
                 return
-            relay_info = await self._await_relay_auto_thread_info(source)
+            for _ in range(20):  # up to ~10s
+                relay_info = self._relay_auto_thread_info(source)
+                if relay_info is not None:
+                    break
+                await asyncio.sleep(0.5)
             if relay_info is None:
                 # True miss: the connector did not auto-thread this reply
                 # (policy off, DM, already-threaded, or send failed).
@@ -21939,6 +21850,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             thread_id=str(context.source.thread_id) if context.source.thread_id else "",
             user_id=str(context.source.user_id) if context.source.user_id else "",
             user_name=str(context.source.user_name) if context.source.user_name else "",
+            user_id_alt=(
+                str(context.source.user_id_alt)
+                if getattr(context.source, "user_id_alt", None)
+                else ""
+            ),
             session_key=context.session_key,
             message_id=str(context.source.message_id) if context.source.message_id else "",
             profile=getattr(context.source, "profile", "") or "",
@@ -26400,29 +26316,24 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             "Queued follow-up for session %s: suppressing intentional silence marker before continuing.",
                             session_key or "?",
                         )
-                    elif first_response:
+                    elif first_response and not _already_streamed:
                         try:
-                            if _already_streamed:
-                                logger.info(
-                                    "Queued follow-up for session %s: final text delivery confirmed; delivering explicit media before continuing.",
-                                    session_key or "?",
-                                )
-                            else:
-                                logger.info(
-                                    "Queued follow-up for session %s: final stream delivery not confirmed; sending first response before continuing.",
-                                    session_key or "?",
-                                )
-                            await self._deliver_queued_first_response(
+                            logger.info(
+                                "Queued follow-up for session %s: final stream delivery not confirmed; sending first response before continuing.",
+                                session_key or "?",
+                            )
+                            await adapter.send(
+                                source.chat_id,
                                 first_response,
-                                source=source,
-                                adapter=adapter,
                                 metadata=_status_thread_metadata,
-                                event_message_id=event_message_id,
-                                text_already_delivered=_already_streamed,
-                                deliver_media=not _delivery_result.get("failed"),
                             )
                         except Exception as e:
                             logger.warning("Failed to send first response before queued message: %s", e)
+                    elif first_response:
+                        logger.info(
+                            "Queued follow-up for session %s: skipping resend because final streamed delivery was confirmed.",
+                            session_key or "?",
+                        )
                     # Release deferred bg-review notifications now that the
                     # first response has been delivered.  Pop from the
                     # adapter's callback dict (prevents double-fire in
