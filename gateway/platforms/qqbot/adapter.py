@@ -1455,6 +1455,7 @@ class QQAdapter(BasePlatformAdapter):
         else:
             # No explicit write list: fall back to QQ_ALLOWED_USERS
             write_allowed = user_allowed
+        slash_blocked = False
         if is_slash_cmd:
             if not write_allowed:
                 ts = timestamp.split("+")[0].split("T")[1] if "+" in timestamp else timestamp[:19]
@@ -1464,13 +1465,15 @@ class QQAdapter(BasePlatformAdapter):
                     self._app_id, member_openid, nick or "", raw_text.split()[0][:50],
                 )
                 text = f"[Context-only — do NOT reply — slash command blocked for {sender_label} @ {ts}]\n{text}"
-                user_allowed = False
+                # Mark as already-context-only so the block below does not
+                # prepend a SECOND context-only prefix.
+                slash_blocked = True
 
         # Non-allowed users: prefix with context-only instruction
         # so the AI knows this message is for context, not for reply.
         # Include a sortable timestamp + sender hint so the AI can
         # distinguish multiple context-only messages in history.
-        if not user_allowed:
+        if not user_allowed and not slash_blocked:
             # timestamp is ISO 8601 from QQ API (e.g. 2026-07-23T10:08:35+08:00)
             ts = timestamp.split("+")[0].split("T")[1] if "+" in timestamp else timestamp[:19]
             text = f"[Context-only — do NOT reply — {sender_label} @ {ts}]\n{text}"
