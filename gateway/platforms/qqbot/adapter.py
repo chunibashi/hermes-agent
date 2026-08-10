@@ -1468,6 +1468,9 @@ class QQAdapter(BasePlatformAdapter):
                 # Mark as already-context-only so the block below does not
                 # prepend a SECOND context-only prefix.
                 slash_blocked = True
+                # Also suppress the reply so the agent's response is not
+                # sent to the group — the user should see nothing.
+                self._suppress_response[group_openid] = True
 
         # Non-allowed users: prefix with context-only instruction
         # so the AI knows this message is for context, not for reply.
