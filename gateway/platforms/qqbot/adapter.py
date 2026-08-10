@@ -1445,6 +1445,34 @@ class QQAdapter(BasePlatformAdapter):
             # timestamp is ISO 8601 from QQ API (e.g. 2026-07-23T10:08:35+08:00)
             ts = timestamp.split("+")[0].split("T")[1] if "+" in timestamp else timestamp[:19]
             text = f"[Context-only — do NOT reply — {sender_label} @ {ts}]\n{text}"
+        else:
+            # Allowed users: prefix with sender identity so shared sessions
+            # (group_sessions_per_user=False) can distinguish who said what.
+            text = f"[{sender_label}] {text}"
+
+        # Slash command guard: non-write-allowed users cannot execute slash
+        # commands. Check QQ_WRITE_ALLOWED_USERS (which takes priority) and
+        # fall back to QQ_ALLOWED_USERS / QQ_GROUP_READ_USERS. If the text
+        # starts with "/" and the user is not in the write list, convert to
+        # context-only so the agent sees the command but does not execute it.
+        stripped = text.strip()
+        if stripped.startswith("/") and member_openid:
+            write_allowed = False
+            env_write = os.environ.get("QQ_WRITE_ALLOWED_USERS", "").strip()
+            if env_write:
+                allowed = {u.strip().lower() for u in env_write.split(",") if u.strip()}
+                write_allowed = "*" in allowed or member_openid.strip().lower() in allowed
+            else:
+                # No explicit write list: fall back to QQ_ALLOWED_USERS
+                write_allowed = user_allowed
+            if not write_allowed:
+                ts = timestamp.split("+")[0].split("T")[1] if "+" in timestamp else timestamp[:19]
+                logger.warning(
+                    "[QQBot:%s] Slash command blocked for non-write user: "
+                    "member_openid=%s nick=%s cmd=%s",
+                    self._app_id, member_openid, nick or "", stripped.split()[0][:50],
+                )
+                text = f"[Context-only — do NOT reply — slash command blocked for {sender_label} @ {ts}]\n{text}"
 
         self._chat_type_map[group_openid] = "group"
         event = MessageEvent(
