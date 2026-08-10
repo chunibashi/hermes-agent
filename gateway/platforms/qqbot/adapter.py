@@ -1437,26 +1437,15 @@ class QQAdapter(BasePlatformAdapter):
         if not text.strip() and not image_urls:
             return
 
-        # Non-allowed users: prefix with context-only instruction
-        # so the AI knows this message is for context, not for reply.
-        # Include a sortable timestamp + sender hint so the AI can
-        # distinguish multiple context-only messages in history.
-        if not user_allowed:
-            # timestamp is ISO 8601 from QQ API (e.g. 2026-07-23T10:08:35+08:00)
-            ts = timestamp.split("+")[0].split("T")[1] if "+" in timestamp else timestamp[:19]
-            text = f"[Context-only — do NOT reply — {sender_label} @ {ts}]\n{text}"
-        else:
-            # Allowed users: prefix with sender identity so shared sessions
-            # (group_sessions_per_user=False) can distinguish who said what.
-            text = f"[{sender_label}] {text}"
-
-        # Slash command guard: non-write-allowed users cannot execute slash
-        # commands. Check QQ_WRITE_ALLOWED_USERS (which takes priority) and
-        # fall back to QQ_ALLOWED_USERS / QQ_GROUP_READ_USERS. If the text
-        # starts with "/" and the user is not in the write list, convert to
-        # context-only so the agent sees the command but does not execute it.
-        stripped = text.strip()
-        if stripped.startswith("/") and member_openid:
+        # Slash command guard — must run BEFORE adding the [sender_label]
+        # identity prefix, otherwise "/cmd" becomes "[nick] /cmd" and the
+        # gateway's slash parser (which checks text.startswith("/")) never
+        # sees the command — breaking /new, /status, etc. for ALLOWED users
+        # too. Slash commands are passed through unchanged for write-allowed
+        # users; non-write users get them converted to context-only.
+        raw_text = text.strip()
+        is_slash_cmd = raw_text.startswith("/") and member_openid
+        if is_slash_cmd:
             write_allowed = False
             env_write = os.environ.get("QQ_WRITE_ALLOWED_USERS", "").strip()
             if env_write:
@@ -1470,9 +1459,25 @@ class QQAdapter(BasePlatformAdapter):
                 logger.warning(
                     "[QQBot:%s] Slash command blocked for non-write user: "
                     "member_openid=%s nick=%s cmd=%s",
-                    self._app_id, member_openid, nick or "", stripped.split()[0][:50],
+                    self._app_id, member_openid, nick or "", raw_text.split()[0][:50],
                 )
                 text = f"[Context-only — do NOT reply — slash command blocked for {sender_label} @ {ts}]\n{text}"
+                user_allowed = False
+
+        # Non-allowed users: prefix with context-only instruction
+        # so the AI knows this message is for context, not for reply.
+        # Include a sortable timestamp + sender hint so the AI can
+        # distinguish multiple context-only messages in history.
+        if not user_allowed:
+            # timestamp is ISO 8601 from QQ API (e.g. 2026-07-23T10:08:35+08:00)
+            ts = timestamp.split("+")[0].split("T")[1] if "+" in timestamp else timestamp[:19]
+            text = f"[Context-only — do NOT reply — {sender_label} @ {ts}]\n{text}"
+        elif not is_slash_cmd:
+            # Allowed users: prefix with sender identity so shared sessions
+            # (group_sessions_per_user=False) can distinguish who said what.
+            # Slash commands are excluded — they must keep their leading "/"
+            # for the gateway slash parser.
+            text = f"[{sender_label}] {text}"
 
         self._chat_type_map[group_openid] = "group"
         event = MessageEvent(
