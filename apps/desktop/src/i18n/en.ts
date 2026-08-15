@@ -2884,6 +2884,7 @@ export const en: Translations = {
       thought: 'Thought',
       thoughtBriefly: 'Thought briefly',
       thoughtFor: duration => `Thought for ${duration}`,
+      turnDuration: duration => `This turn took ${duration}`,
       today: time => `Today, ${time}`,
       yesterday: time => `Yesterday, ${time}`,
       copy: 'Copy',
