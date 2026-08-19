@@ -5559,6 +5559,7 @@ def run_job(
             acp_command=runtime.get("command"),
             acp_args=runtime.get("args"),
             max_iterations=max_iterations,
+            max_tokens=job.get("max_tokens"),
             reasoning_config=reasoning_config,
             prefill_messages=prefill_messages,
             fallback_model=fallback_model,
