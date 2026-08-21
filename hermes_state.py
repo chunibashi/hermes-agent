@@ -54,6 +54,7 @@ from hermes_state_common import (  # noqa: F401  (re-exported for back-compat)
     _FTS_CJK_TRIGGERS,
     _FTS_TRIGGERS,
     _LISTABLE_CHILD_SQL,
+    _PREVIEW_ELIGIBLE_SQL,
     _PREVIEW_RAW_SELECT,
     _RESET_END_REASONS,
     _RESET_END_REASONS_SQL,
@@ -8880,6 +8881,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                         (SELECT {_PREVIEW_RAW_SELECT}
                          FROM messages m
                          WHERE m.session_id = s.id AND m.role = 'user' AND m.content IS NOT NULL
+                           AND {_PREVIEW_ELIGIBLE_SQL}
                          ORDER BY m.timestamp, m.id LIMIT 1),
                         ''
                     ) AS _preview_raw,
@@ -8903,6 +8905,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                         (SELECT {_PREVIEW_RAW_SELECT}
                          FROM messages m
                          WHERE m.session_id = s.id AND m.role = 'user' AND m.content IS NOT NULL
+                           AND {_PREVIEW_ELIGIBLE_SQL}
                          ORDER BY m.timestamp, m.id LIMIT 1),
                         ''
                     ) AS _preview_raw,
@@ -8942,6 +8945,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                         (SELECT {_PREVIEW_RAW_SELECT}
                          FROM messages m
                          WHERE m.session_id = s.id AND m.role = 'user' AND m.content IS NOT NULL
+                           AND {_PREVIEW_ELIGIBLE_SQL}
                          ORDER BY m.timestamp, m.id LIMIT 1),
                         ''
                     ) AS _preview_raw,
@@ -12711,6 +12715,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                             (SELECT {_PREVIEW_RAW_SELECT}
                              FROM messages m
                              WHERE m.session_id = s.id AND m.role = 'user' AND m.content IS NOT NULL
+                               AND {_PREVIEW_ELIGIBLE_SQL}
                              ORDER BY m.timestamp, m.id LIMIT 1),
                             ''
                         ) AS _preview_raw,
@@ -12741,6 +12746,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                             (SELECT {_PREVIEW_RAW_SELECT}
                              FROM messages m
                              WHERE m.session_id = s.id AND m.role = 'user' AND m.content IS NOT NULL
+                               AND {_PREVIEW_ELIGIBLE_SQL}
                              ORDER BY m.timestamp, m.id LIMIT 1),
                             ''
                         ) AS _preview_raw,
