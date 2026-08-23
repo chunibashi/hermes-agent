@@ -53,6 +53,13 @@ dependencies = [
   # Responses API resource is exercised from a non-main thread, which is the
   # codex_responses dispatch in agent/chat_completion_helpers.py:_call.
   "pydantic==2.13.4",
+  # typing_extensions — must be >=4.15.0 for `Sentinel` (used by pydantic-core 2.46.4).
+  # Declared as a DIRECT dep (not just transitive) because the desktop backend's
+  # crash-recovery path runs `pip install -e .` and pip's resolver will otherwise
+  # pick typing_extensions==4.12.2 (still on PyPI) which lacks Sentinel, crashing
+  # the backend with `ImportError: cannot import name 'Sentinel' from 'typing_extensions'`.
+  # Pin the floor; ceiling matches uv.lock resolution to avoid churn.
+  "typing_extensions>=4.15.0,<5.0",
   # Interactive CLI (prompt_toolkit is used directly by cli.py)
   "prompt_toolkit==3.0.52",
   # Cron scheduler (built-in feature — scheduled cron/interval jobs use croniter).
