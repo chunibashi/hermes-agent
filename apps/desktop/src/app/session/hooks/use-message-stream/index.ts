@@ -409,7 +409,13 @@ export function useMessageStream({
   )
 
   const appendReasoningDelta = useCallback(
-    (sessionId: string, delta: string, replace = false, occurredAt = Date.now() / 1000) => {
+    (
+      sessionId: string,
+      delta: string,
+      replace = false,
+      occurredAt = Date.now() / 1000,
+      fillOnly = false
+    ) => {
       if (!delta) {
         return
       }
@@ -425,6 +431,23 @@ export function useMessageStream({
       mutateStream(
         sessionId,
         (parts, message) => {
+          // Fill-only reasoning.available: a whole-block reasoning payload
+          // (non-streamed models) must not clobber thinking already streamed
+          // via reasoning.delta — replace semantics made the thinking panel
+          // stop at the block boundary (half the reasoning missing). Only
+          // seed from the block when no reasoning has been accumulated yet.
+          if (fillOnly) {
+            const hasReasoning = parts.some(
+              p => p?.type === 'reasoning' && typeof p.text === 'string' && p.text.trim().length > 0
+            )
+
+            if (hasReasoning) {
+              return parts
+            }
+
+            return [reasoningPart(delta, occurredAt)]
+          }
+
           if (replace && chatMessageText(message).trim()) {
             return parts
           }

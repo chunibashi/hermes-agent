@@ -6734,7 +6734,17 @@ def run_conversation(
                         pass
                 elif _think_text:
                     try:
-                        agent.tool_progress_callback("reasoning.available", "_thinking", _think_text[:500], None)
+                        # Send the FULL thinking, not a 500-char preview. The
+                        # 500-char cap was a display-brevity choice, but for
+                        # models that embed reasoning inside content think
+                        # tags (deepseek-v4-flash via OpenAI-compatible
+                        # relays, MiniMax-M2.7, etc.) there is NO separate
+                        # reasoning.delta stream — reasoning.available IS the
+                        # only channel the desktop/tui have for showing the
+                        # thinking. Truncating it made the desktop's thinking
+                        # panel stop mid-sentence ("thinking cut off halfway")
+                        # while the database kept the full reasoning.
+                        agent.tool_progress_callback("reasoning.available", "_thinking", _think_text, None)
                     except Exception:
                         pass
             

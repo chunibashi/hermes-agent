@@ -159,18 +159,26 @@ class TestThinkingCallback:
         """Simulate the exact code path from run_agent.py for the thinking callback.
         
         delegate_depth: simulates self._delegate_depth.
-            0 = main agent (should NOT fire), >=1 = subagent (should fire).
+            0 = main agent (sends reasoning.available with FULL text),
+            >=1 = subagent (fires _thinking with first line only).
         """
         import re
-        if (content and callback and delegate_depth > 0):
+        if (content and callback):
             _think_text = content.strip()
             _think_text = re.sub(
                 r'</?(?:REASONING_SCRATCHPAD|think|reasoning)>', '', _think_text
             ).strip()
             first_line = _think_text.split('\n')[0][:80] if _think_text else ""
-            if first_line:
+            if first_line and delegate_depth > 0:
                 try:
                     callback("_thinking", first_line)
+                except Exception:
+                    pass
+            elif _think_text:
+                # Main agent path: reasoning.available carries the FULL thinking
+                # (was [:500] — truncated the thinking panel mid-sentence).
+                try:
+                    callback("reasoning.available", "_thinking", _think_text, None)
                 except Exception:
                     pass
 
@@ -196,6 +204,23 @@ class TestThinkingCallback:
         )
         assert len(calls) == 1
         assert len(calls[0][1]) == 80
+
+    def test_main_agent_sends_full_reasoning_not_500_cap(self):
+        """Main agent (delegate_depth=0) must get the FULL thinking via
+        reasoning.available — the old 500-char cap made the desktop thinking
+        panel stop mid-sentence while the DB kept the complete reasoning."""
+        calls = []
+        self._simulate_thinking_callback(
+            "deep " * 300,  # 1500 chars of thinking
+            lambda *args: calls.append(args),
+            delegate_depth=0
+        )
+        assert len(calls) == 1
+        event_name, tool_name, text, _extra = calls[0]
+        assert event_name == "reasoning.available"
+        assert tool_name == "_thinking"
+        assert len(text) > 500
+        assert text.startswith("deep ")
 
 
 

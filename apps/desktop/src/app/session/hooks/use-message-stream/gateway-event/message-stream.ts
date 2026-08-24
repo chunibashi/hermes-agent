@@ -211,7 +211,14 @@ export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
 
   if (event.type === 'reasoning.available') {
     if (sessionId) {
-      appendReasoningDelta(sessionId, coerceThinkingText(payload?.text), true, occurredAt)
+      // reasoning.available carries the model's thinking as one block
+      // (non-streamed models, or content-embedded think tags like
+      // deepseek-v4-flash via OpenAI-compatible relays). With replace=true it
+      // would clobber thinking already accumulated from reasoning.delta
+      // streams on models that ship both — the desktop's thinking panel then
+      // stops halfway (the "thinking cut off" report). Fill-only: keep any
+      // streamed reasoning, only seed from the block when nothing arrived.
+      appendReasoningDelta(sessionId, coerceThinkingText(payload?.text), true, occurredAt, true)
     }
 
     if (isActiveEvent) {
