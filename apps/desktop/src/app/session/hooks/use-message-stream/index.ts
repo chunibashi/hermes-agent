@@ -445,7 +445,11 @@ export function useMessageStream({
               return parts
             }
 
-            return [reasoningPart(delta, occurredAt)]
+            // No streamed reasoning yet (single-channel model: deepseek,
+            // MiniMax, etc.). Prepend the full block so it lands before
+            // tool calls — matches the logical timeline (think → act) and
+            // preserves any tool/terminal parts already in the stream.
+            return [reasoningPart(delta, occurredAt), ...parts]
           }
 
           if (replace && chatMessageText(message).trim()) {
