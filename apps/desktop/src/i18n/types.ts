@@ -2541,6 +2541,7 @@ export interface Translations {
     hide: string
     openPreview: string
     openInBrowser: string
+    openInExternal: string
     linkHint: string
     sourceLineTitle: string
     source: string
