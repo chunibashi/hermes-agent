@@ -3159,9 +3159,35 @@ def _(rid, params: dict) -> dict:
             history = _visible_branch_history(in_memory_history)
         if not history:
             return _err(rid, 4008, "nothing to branch — send a message first")
-        count = params.get("count")
-        if isinstance(count, int) and count > 0:
-            history = history[:count]
+        # Branch-point selection: prefer the clicked message's durable row id
+        # over a count. ``history`` is the backend's DISPLAY projection (full
+        # compression lineage), while the count the desktop sends is derived
+        # from the REST tip-only projection — the two can disagree in length
+        # after context compression, so history[:count] slices the wrong
+        # window (duplicated or missing history). A row id addresses the same
+        # logical row in both projections, so the branch cuts exactly where
+        # the user clicked.
+        branch_point_row_id = params.get("row_id")
+        if isinstance(branch_point_row_id, int) and branch_point_row_id > 0:
+            cut = None
+            for idx, message in enumerate(history):
+                if message.get("_row_id") == branch_point_row_id:
+                    cut = idx
+                    break
+            if cut is not None:
+                history = history[: cut + 1]
+            else:
+                # The clicked row was filtered out of this projection (e.g. it
+                # is a tool/empty row that _visible_branch_history drops) —
+                # fall back to the count so a stray row_id can't silently
+                # widen the branch to the whole transcript.
+                count = params.get("count")
+                if isinstance(count, int) and count > 0:
+                    history = history[:count]
+        else:
+            count = params.get("count")
+            if isinstance(count, int) and count > 0:
+                history = history[:count]
         new_key = _new_session_key()
         new_sid = uuid.uuid4().hex[:8]
         source = _session_source(session)

@@ -1941,7 +1941,8 @@ export function useSessionActions({
       parentStoredId: null | string,
       cwd?: string,
       profile?: null | string,
-      branchCount?: number
+      branchCount?: number,
+      branchPointRowId?: number
     ): Promise<boolean> => {
       creatingSessionRef.current = true
 
@@ -1959,6 +1960,14 @@ export function useSessionActions({
         const branched = sourceSessionId
           ? await requestGateway<SessionCreateResponse>('session.branch', {
               session_id: sourceSessionId,
+              // Prefer the clicked bubble's durable row id over a count: the
+              // backend truncates its OWN lineage display projection, which can
+              // differ in length from the REST tip-only projection the count
+              // was derived from (context-compressed sessions) — a count then
+              // slices the wrong window and the branch inherits duplicated or
+              // missing history. row_id addresses the same logical row in both
+              // projections.
+              ...(branchPointRowId !== undefined ? { row_id: branchPointRowId } : {}),
               ...(branchCount !== undefined ? { count: branchCount } : {})
             })
           : await requestGateway<SessionCreateResponse>('session.create', {
@@ -2125,13 +2134,23 @@ export function useSessionActions({
       // The open chat's owning profile, NOT the picker's / launch profile —
       // /profile only retargets new chats, so a branch of an existing thread
       // must stay on that thread's backend (cache hit for an open session).
+      // Pass the clicked bubble's durable row id so the backend truncates its
+      // lineage projection at the SAME logical row the REST read mapped to —
+      // a count can point elsewhere when the projections differ in length
+      // (compressed lineage), duplicating or dropping history.
+      const branchPointRowId =
+        messageId !== undefined
+          ? branchMessages[branchMessages.length - 1]?.source?.rowId
+          : undefined
+
       return forkBranch(
         branchMessages,
         startingActiveSessionId,
         storedSessionId,
         startingCwd,
         profile,
-        messageId ? branchMessages.length : undefined
+        messageId ? branchMessages.length : undefined,
+        branchPointRowId
       )
     },
     [activeSessionIdRef, busyRef, copy, forkBranch, getRouteToken, selectedStoredSessionIdRef]

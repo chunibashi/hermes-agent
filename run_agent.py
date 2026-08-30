@@ -671,6 +671,15 @@ class AIAgent:
                     _init_model_config["yolo_mode"] = True
             except Exception:
                 pass
+            # A branch created via session.create defers its DB row to the
+            # first turn; if THIS lazy create wins the INSERT-OR-IGNORE race
+            # against tui_gateway._ensure_session_db_row, the _branched_from
+            # marker must still land — _is_explicit_branch_session() uses it to
+            # stop lineage walks, so without it the branch re-inherits the
+            # parent's history on resume/branch and duplicates content.
+            if self._parent_session_id:
+                _init_model_config = dict(_init_model_config or {})
+                _init_model_config["_branched_from"] = self._parent_session_id
             self._session_db.create_session(
                 session_id=self.session_id,
                 source=source,
