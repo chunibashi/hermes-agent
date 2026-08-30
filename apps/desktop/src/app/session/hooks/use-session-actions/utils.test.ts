@@ -327,6 +327,49 @@ describe('selectBranchMessages', () => {
       'latest answer'
     ])
   })
+
+  it('falls back to the full authoritative transcript when the clicked bubble is outside the live atom', () => {
+    // The live atom can be a compacted model projection (summary + tail), so
+    // the clicked message id is not present in it. The branch must seed from
+    // the authoritative projection instead of inheriting only the summary/tail.
+    const local = [
+      msg('summary', 'assistant', 'compact summary', { rowId: 1 }),
+      msg('tail-assistant', 'assistant', 'latest answer', { rowId: 14 })
+    ]
+
+    const authoritative = [
+      msg('old-user', 'user', 'first question', { rowId: 11 }),
+      msg('old-assistant', 'assistant', 'first answer', { rowId: 12 }),
+      msg('tail-user', 'user', 'latest question', { rowId: 13 }),
+      msg('tail-assistant', 'assistant', 'latest answer', { rowId: 14 })
+    ]
+
+    expect(selectBranchMessages(local, authoritative, 'clicked-outside-live-atom').map(message => message.content)).toEqual([
+      'first question',
+      'first answer',
+      'latest question',
+      'latest answer'
+    ])
+  })
+
+  it('slices the authoritative transcript at the clicked id when it is present there but missing locally', () => {
+    const local = [
+      msg('summary', 'assistant', 'compact summary', { rowId: 1 }),
+      msg('tail-assistant', 'assistant', 'latest answer', { rowId: 14 })
+    ]
+
+    const authoritative = [
+      msg('old-user', 'user', 'first question', { rowId: 11 }),
+      msg('clicked-assistant', 'assistant', 'clicked answer', { rowId: 15 }),
+      msg('tail-user', 'user', 'latest question', { rowId: 13 }),
+      msg('tail-assistant', 'assistant', 'latest answer', { rowId: 14 })
+    ]
+
+    expect(selectBranchMessages(local, authoritative, 'clicked-assistant').map(message => message.content)).toEqual([
+      'first question',
+      'clicked answer'
+    ])
+  })
 })
 
 describe('chatPartsEquivalent', () => {

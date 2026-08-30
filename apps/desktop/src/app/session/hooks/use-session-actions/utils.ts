@@ -1197,6 +1197,20 @@ export function selectBranchMessages(
   }
 
   if (localIndex < 0) {
+    // The live atom may be a compacted model projection (summary + tail),
+    // so the clicked bubble's id is not in it. Prefer the authoritative
+    // projection: if the clicked id is present there, slice to that exact
+    // row; otherwise fall back to the complete authoritative transcript so
+    // the branch never inherits only the summary/tail.
+    if (authoritativeMessages?.length) {
+      const authoritativeClick = messageId
+        ? authoritativeMessages.findIndex(message => message.id === messageId)
+        : -1
+      if (authoritativeClick >= 0) {
+        return toBranchMessages(authoritativeMessages.slice(0, authoritativeClick + 1))
+      }
+      return toBranchMessages(authoritativeMessages)
+    }
     return toBranchMessages(localMessages)
   }
 
