@@ -2143,10 +2143,15 @@ export function useSessionActions({
       // lineage projection at the SAME logical row the REST read mapped to —
       // a count can point elsewhere when the projections differ in length
       // (compressed lineage), duplicating or dropping history.
-      const branchPointRowId =
-        messageId !== undefined
-          ? branchMessages[branchMessages.length - 1]?.source?.rowId
-          : undefined
+      // Resolve the row id from the CLICKED message directly (prefer authoritative,
+      // fall back to the live atom), not from the last branchMessages element —
+      // when authoritative is unavailable, branchMessages may end at a different
+      // row (the local atom's tail), causing the backend to amputate the branch.
+      const clickedMessage = messageId
+        ? (authoritativeMessages ?? []).find(m => m.id === messageId) ??
+          messages.find(m => m.id === messageId)
+        : undefined
+      const branchPointRowId = clickedMessage?.rowId
 
       return forkBranch(
         branchMessages,
@@ -2154,7 +2159,15 @@ export function useSessionActions({
         storedSessionId,
         startingCwd,
         profile,
-        messageId ? branchMessages.length : undefined,
+        // Omit the count for bubble-branch paths: the row_id drives the
+        // backend's truncation. Sending a count derived from a potentially
+        // truncated localMessages would amputate the branch when the REST
+        // authoritative read is unavailable (the local atom may be a
+        // compacted model projection). The backend reads its own full
+        // display projection via get_resume_conversations and cuts at the
+        // row_id; no count means no fallback truncation when row_id is
+        // absent (unfiltered row for a tool/empty click target).
+        undefined,
         branchPointRowId
       )
     },

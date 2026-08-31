@@ -1250,7 +1250,13 @@ export function selectBranchMessages(
   }
 
   if (authoritativeIndex < 0) {
-    return toBranchMessages(localMessages.slice(0, localIndex + 1))
+    // Neither rowId nor ordinal-role/text matched the clicked bubble in the
+    // authoritative projection. Fall back to the COMPLETE authoritative
+    // transcript rather than truncating to the local atom's prefix — the
+    // local atom may be a compacted model projection or have a different
+    // message structure than the persisted rows, so slicing there would
+    // silently drop messages after the last-mapped turn.
+    return toBranchMessages(authoritativeMessages)
   }
 
   return toBranchMessages(authoritativeMessages.slice(0, authoritativeIndex + 1))

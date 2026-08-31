@@ -1737,10 +1737,13 @@ describe('branchStoredSession desktop source tagging', () => {
     await expect(branchCurrentSession!('a1')).resolves.toBe(true)
 
     expect(requestGateway).toHaveBeenCalledWith('session.branch', {
-      session_id: 'live-parent',
-      count: 2
+      session_id: 'live-parent'
     })
-    expect(branchParams).toEqual({ session_id: 'live-parent', count: 2 })
+    // No count sent: the backend truncates its OWN display projection via
+    // row_id. When row_id is unavailable (no durable row id on the live
+    // message), no count means the backend returns the full transcript —
+    // safer than amputating with a wrong count.
+    expect(branchParams).toEqual({ session_id: 'live-parent' })
   })
 
   it('hydrates the complete persisted display transcript before branching a compacted live chat', async () => {
