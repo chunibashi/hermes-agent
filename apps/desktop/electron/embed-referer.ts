@@ -28,7 +28,13 @@ function installEmbedRefererForSession(embedSession) {
 
     const headers = { ...details.requestHeaders }
 
-    if (!headers.Referer && !headers.referer) {
+    // YouTube's embed player requires a valid HTTP(S) Referer. In the
+    // packaged app the origin is file://, which the browser sends as the
+    // Referer (via iframe referrerPolicy) but YouTube rejects. Override
+    // any non-HTTP Referer so the embed doesn't get Error 153.
+    const ref = headers.Referer || headers.referer || ''
+
+    if (!ref || !/^https?:\/\//.test(ref)) {
       headers.Referer = EMBED_REFERER
     }
 
