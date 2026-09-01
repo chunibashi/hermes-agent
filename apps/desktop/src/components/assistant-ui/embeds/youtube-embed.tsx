@@ -31,7 +31,7 @@ async function embedProxyPort(): Promise<number | null> {
   return cachedProxyPort
 }
 
-function youtubeSrc(embedUrl: string, proxyPort: number | null): string {
+function youtubeSrc(embedUrl: string, proxyPort: number | null | undefined): string {
   const url = new URL(embedUrl)
 
   // Route through the local wrapper when the packaged app provides one. The
