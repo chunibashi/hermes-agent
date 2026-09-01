@@ -36,6 +36,7 @@ import {
 } from '@/store/model-visibility'
 import { $collapsedProviders, toggleCollapsedProvider } from '@/store/provider-collapse'
 import { $defaultReasoningEffort } from '@/store/session'
+import { $favoriteModels, isFavorite, setFavoriteModels, toggleFavorite } from '@/store/model-favorites'
 import type { ModelOptionProvider, ModelOptionsResponse } from '@/types/hermes'
 
 import { type FastControl, ModelEditSubmenu, resolveFastControl } from './model-edit-submenu'
@@ -99,6 +100,9 @@ interface ModelCatalogMenuProps {
   /** Render the virtual `moa` provider's presets as a selectable section.
    *  Off for override surfaces, where a MoA preset isn't a worker model. */
   includeMoa?: boolean
+  /** Registry source owning this catalog. Profile/session names are not unique
+   * across sources, so this participates in the React Query cache key. */
+  ownerConnectionId?: string
   profile?: string
   /** Session whose catalog to fetch. A live session's catalog can differ from
    *  the profile-global one, and the app invalidates the SESSION-scoped query
@@ -109,6 +113,12 @@ interface ModelCatalogMenuProps {
 
 interface ProviderGroup {
   families: ModelFamily[]
+  provider: ModelOptionProvider
+}
+
+/** A resolved favorite entry: the provider + family to render. */
+interface FavoriteEntry {
+  family: ModelFamily
   provider: ModelOptionProvider
 }
 
@@ -124,6 +134,7 @@ export function ModelCatalogMenu({
   footer,
   gateway,
   includeMoa = false,
+  ownerConnectionId,
   profile = 'default',
   request,
   sessionId = null
@@ -139,9 +150,10 @@ export function ModelCatalogMenu({
   // catalog must show the same shortlist. A per-caller opt-in is how the board
   // and the composer would end up disagreeing about what "my models" means.
   const visibleModels = useStore($visibleModels)
+  const favorites = useStore($favoriteModels)
 
   const modelOptions = useQuery({
-    queryKey: modelOptionsQueryKey(profile, sessionId),
+    queryKey: modelOptionsQueryKey(profile, sessionId, ownerConnectionId),
     // Gateway-first even with no session: a connected (possibly remote)
     // gateway owns the model catalog, including virtual providers the local
     // REST fallback can't know about (#53817).
@@ -181,8 +193,15 @@ export function ModelCatalogMenu({
   )
 
   const groups = useMemo(
-    () => groupModels(pickerProviders, search, { model: current.model, provider: current.provider }, shownKeys),
-    [pickerProviders, search, current.model, current.provider, shownKeys]
+    () =>
+      groupModels(
+        pickerProviders,
+        search,
+        { model: current.model, provider: current.provider },
+        shownKeys,
+        favorites
+      ),
+    [pickerProviders, search, current.model, current.provider, shownKeys, favorites]
   )
 
   const q = normalize(search)
@@ -194,6 +213,38 @@ export function ModelCatalogMenu({
     () => (q ? moaPresets.filter(preset => `moa ${preset}`.toLowerCase().includes(q)) : moaPresets),
     [moaPresets, q]
   )
+
+  // Compute cross-provider favorite entries, only when not searching.
+  const favoriteEntries = useMemo<FavoriteEntry[]>(() => {
+    if (!favorites || favorites.size === 0 || !pickerProviders) {
+      return []
+    }
+
+    const entries: FavoriteEntry[] = []
+
+    for (const provider of pickerProviders) {
+      const allFamilies = collapseModelFamilies(provider.models ?? [])
+
+      for (const family of allFamilies) {
+        if (isFavorite(favorites, provider.slug, family.id)) {
+          entries.push({ family, provider })
+        }
+      }
+    }
+
+    // Stable sort: alphabetical by provider name, then by model id.
+    entries.sort((a, b) => {
+      const p = a.provider.name.localeCompare(b.provider.name)
+
+      if (p !== 0) {
+        return p
+      }
+
+      return a.family.id.localeCompare(b.family.id)
+    })
+
+    return entries
+  }, [favorites, pickerProviders])
 
   const selectFamily = async (family: ModelFamily, provider: ModelOptionProvider) => {
     const caps = provider.capabilities?.[family.id]
@@ -231,10 +282,20 @@ export function ModelCatalogMenu({
   // so the selection can never sit on a hidden row.
   type KbRow =
     | { family: ModelFamily; key: string; kind: 'family'; provider: ModelOptionProvider }
+    | { family: ModelFamily; key: string; kind: 'fav'; provider: ModelOptionProvider }
     | { key: string; kind: 'moa'; preset: string }
 
   const kbRows = useMemo<KbRow[]>(
     () => [
+      // Favorite rows (only when not searching)
+      ...(!q
+        ? favoriteEntries.map(({ family, provider }): KbRow => ({
+            family,
+            key: `fav:${provider.slug}:${family.id}`,
+            kind: 'fav',
+            provider
+          }))
+        : []),
       ...groups.flatMap(group =>
         collapsedProviders.includes(group.provider.slug) && !search
           ? []
@@ -247,7 +308,7 @@ export function ModelCatalogMenu({
       ),
       ...shownMoaPresets.map((preset): KbRow => ({ key: `moa:${preset}`, kind: 'moa', preset }))
     ],
-    [groups, collapsedProviders, search, shownMoaPresets]
+    [groups, collapsedProviders, search, shownMoaPresets, favoriteEntries, q]
   )
 
   const [kbOverride, setKbOverride] = useState<null | number>(null)
@@ -363,12 +424,111 @@ export function ModelCatalogMenu({
         <DropdownMenuItem className={dropdownMenuRow} disabled>
           {error}
         </DropdownMenuItem>
-      ) : groups.length === 0 && moaPresets.length === 0 ? (
+      ) : groups.length === 0 && moaPresets.length === 0 && favoriteEntries.length === 0 ? (
         <DropdownMenuItem className={dropdownMenuRow} disabled>
           {copy.noModels}
         </DropdownMenuItem>
       ) : (
         <div className={cn('max-h-[max(150px,30dvh)] overflow-y-auto py-0.5', quietRows)} ref={listRef}>
+          {/* ⭐ Favorites group — cross-provider, shown only when not searching */}
+          {!q && favoriteEntries.length > 0 && (
+            <DropdownMenuGroup className="py-0.5">
+              <DropdownMenuLabel className={dropdownMenuSectionLabel}>★ {copy.favorites}</DropdownMenuLabel>
+              {favoriteEntries.map(({ family, provider }) => {
+                const activeId =
+                  isCurrentProvider(provider, current.provider) &&
+                  (current.model === family.id || current.model === family.fastId)
+                    ? current.model
+                    : null
+                const isCurrent = activeId !== null
+                const name = modelDisplayParts(family.id).name
+                const caps = provider.capabilities?.[family.id]
+                const preset = controller.presetFor(provider.slug, family.id)
+                const effEffort = isCurrent ? current.effort : (preset.effort ?? '')
+                const effFast = isCurrent ? current.fast : (preset.fast ?? false)
+
+                const fastControl: FastControl = resolveFastControl(
+                  activeId ?? family.id,
+                  provider.models ?? [],
+                  caps?.fast ?? false,
+                  effFast
+                )
+
+                const meta = [
+                  fastControl.kind !== 'none' && fastControl.on ? copy.fast : null,
+                  (caps?.reasoning ?? true) ? reasoningEffortLabel(effEffort || defaultEffort) : null
+                ]
+                  .filter(Boolean)
+                  .join(' ')
+
+                const activate = () => {
+                  if (!isCurrent) {
+                    void selectFamily(family, provider)
+                  }
+
+                  closeMenu()
+                }
+
+                const faved = isFavorite(favorites, provider.slug, family.id)
+                const toggleFav = (event: React.MouseEvent) => {
+                  event.stopPropagation()
+                  event.preventDefault()
+                  setFavoriteModels(toggleFavorite($favoriteModels.get(), provider.slug, family.id))
+                }
+
+                return (
+                  <DropdownMenuSub key={`fav:${provider.slug}:${family.id}`}>
+                    <DropdownMenuSubTrigger
+                      hideChevron
+                      onClick={activate}
+                      onKeyDown={event => {
+                        if (event.key === 'Enter' || event.key === ' ') {
+                          activate()
+                        }
+                      }}
+                      {...kbRowProps(`fav:${provider.slug}:${family.id}`)}
+                    >
+                      <button
+                        aria-label={faved ? copy.unfavorite : copy.favorite}
+                        className="shrink-0 cursor-pointer text-[0.7rem] leading-none hover:scale-110 transition-transform"
+                        onClick={toggleFav}
+                        tabIndex={-1}
+                        type="button"
+                      >
+                        {faved ? '★' : '☆'}
+                      </button>
+                      <span className="min-w-0 flex-1 truncate">
+                        <HighlightMatches query={search} text={name} />
+                        {meta ? <span className="text-(--ui-text-tertiary)"> {meta}</span> : null}
+                      </span>
+                      {isCurrent ? (
+                        <Codicon className="ml-auto text-foreground" name="check" size="0.75rem" />
+                      ) : null}
+                    </DropdownMenuSubTrigger>
+                    <ModelEditSubmenu
+                      canDisableReasoning={caps?.can_disable_reasoning}
+                      defaultEffort={defaultEffort}
+                      effort={effEffort}
+                      fastControl={fastControl}
+                      isActive={isCurrent}
+                      model={family.id}
+                      onSelectModel={nextModel => controller.select(nextModel, provider.slug)}
+                      onSetOptions={patch =>
+                        controller.setOptions(patch, {
+                          isActive: isCurrent,
+                          model: family.id,
+                          provider: provider.slug
+                        })
+                      }
+                      provider={provider.slug}
+                      reasoning={caps?.reasoning ?? true}
+                    />
+                  </DropdownMenuSub>
+                )
+              })}
+            </DropdownMenuGroup>
+          )}
+
           {groups.map(group => {
             const slug = group.provider.slug
 
@@ -430,6 +590,13 @@ export function ModelCatalogMenu({
                       .filter(Boolean)
                       .join(' ')
 
+                    const faved = isFavorite(favorites, group.provider.slug, family.id)
+                    const toggleFav = (event: React.MouseEvent) => {
+                      event.stopPropagation()
+                      event.preventDefault()
+                      setFavoriteModels(toggleFavorite($favoriteModels.get(), group.provider.slug, family.id))
+                    }
+
                     // Clicking the row commits the model and closes; the edit
                     // submenu (reasoning/fast) is reached by HOVER, so you can
                     // tweak those without the click dismissing everything.
@@ -453,6 +620,15 @@ export function ModelCatalogMenu({
                           }}
                           {...kbRowProps(`${group.provider.slug}:${family.id}`)}
                         >
+                          <button
+                            aria-label={faved ? copy.unfavorite : copy.favorite}
+                            className="shrink-0 cursor-pointer text-[0.7rem] leading-none hover:scale-110 transition-transform"
+                            onClick={toggleFav}
+                            tabIndex={-1}
+                            type="button"
+                          >
+                            {faved ? '★' : '☆'}
+                          </button>
                           <span className="min-w-0 flex-1 truncate">
                             <HighlightMatches query={search} text={name} />
                             {meta ? <span className="text-(--ui-text-tertiary)"> {meta}</span> : null}
@@ -543,7 +719,8 @@ function groupModels(
   providers: ModelOptionProvider[],
   search: string,
   current: { model: string; provider: string },
-  visible: Set<string> | null
+  visible: Set<string> | null,
+  favorites: Set<string> | null
 ): ProviderGroup[] {
   const q = normalize(search)
   const groups: ProviderGroup[] = []
@@ -584,8 +761,13 @@ function groupModels(
 
     const families = allFamilies.filter(family => shown.has(family.id) || family.id === activeId)
 
-    if (families.length > 0) {
-      groups.push({ families, provider })
+    // Remove favorites from regular groups — they are shown in the Favorites
+    // section at the top instead. Only when not searching.
+    const filtered =
+      !q && favorites?.size ? families.filter(family => !isFavorite(favorites, provider.slug, family.id)) : families
+
+    if (filtered.length > 0) {
+      groups.push({ families: filtered, provider })
     }
   }
 
