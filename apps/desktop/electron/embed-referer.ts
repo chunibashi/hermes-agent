@@ -36,10 +36,14 @@ function installEmbedRefererForSession(embedSession) {
   })
 }
 
-/** Stamp Referer on YouTube requests in the embed webview partition only. */
+/** Stamp Referer on YouTube requests in the embed webview partition and default session. */
 function installEmbedReferer() {
   try {
     installEmbedRefererForSession(session.fromPartition(EMBED_SESSION_PARTITION))
+    // Also cover iframes (YouTube embeds use <iframe>, not <webview>): they
+    // share the default session, which otherwise sends no Referer to YouTube
+    // and triggers Error 153 ("Video player configuration error").
+    installEmbedRefererForSession(session.defaultSession)
   } catch {
     // Non-fatal: embeds still render; YouTube may show referer errors.
   }
