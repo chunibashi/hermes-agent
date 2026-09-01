@@ -167,7 +167,7 @@ import {
   uninstallArgsForMode
 } from './desktop-uninstall'
 import { describeDevCdpDecision, resolveDevCdpPort } from './dev-cdp'
-import { installEmbedReferer } from './embed-referer'
+import { installEmbedReferer, startYouTubeEmbedProxy } from './embed-referer'
 import { createEventDeduper } from './event-dedupe'
 import {
   buildTerminalScript,
@@ -470,6 +470,10 @@ const APP_ROOT = app.getAppPath()
 // Device-local preference: block F12 from opening DevTools.
 // Set dynamically via IPC from the renderer Settings → Advanced.
 let f12Blocked = false
+
+// Port of the local HTTP proxy for YouTube embeds. Started before the first
+// window is created; null until the server is listening (a few ms).
+let embedProxyPort: number | null = null
 
 // Preload must be plain JS — Electron's sandbox can't run .ts, and tsx's
 // ESM loader is broken on Electron 40's Node (ERR_INVALID_RETURN_PROPERTY_VALUE).
@@ -16645,6 +16649,13 @@ ipcMain.on('hermes:translucency:support', event => {
   event.returnValue = { glass: GLASS_SUPPORTED, translucency: TRANSLUCENCY_SUPPORTED }
 })
 
+// Port of the local YouTube embed proxy, if its server is up (packaged app).
+// The renderer uses it to route YouTube iframes through a localhost wrapper
+// so the player gets a valid HTTP `document.referrer` (file:// origins give
+// Error 153). Async: the server starts in app-ready and may not be listening
+// for a few ms, so callers should treat `null` as "use the direct embed URL".
+ipcMain.handle('hermes:embed-proxy:port', () => embedProxyPort)
+
 ipcMain.on('hermes:translucency', (_event, payload) => {
   const next = normalizeTranslucency(payload, GLASS_SUPPORTED)
   const previous = translucencyState
@@ -17493,6 +17504,11 @@ app.whenReady().then(() => {
   installDownloadHandling()
   registerMediaProtocol()
   installEmbedReferer()
+  startYouTubeEmbedProxy().then(({ port }) => {
+    embedProxyPort = port
+  }).catch(() => {
+    // Non-fatal: YouTube embeds may show Error 153 on file:// origins.
+  })
   installRemoteHeaderRules()
   registerDeepLinkProtocol()
 

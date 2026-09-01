@@ -172,6 +172,8 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   },
   getBootProgress: () => ipcRenderer.invoke('hermes:boot-progress:get'),
   getConnectionConfig: profile => ipcRenderer.invoke('hermes:connection-config:get', profile),
+  // Port of the local YouTube embed proxy (packaged app) — null when absent.
+  getEmbedProxyPort: () => ipcRenderer.invoke('hermes:embed-proxy:port'),
   saveConnectionConfig: payload => ipcRenderer.invoke('hermes:connection-config:save', payload),
   applyConnectionConfig: payload => ipcRenderer.invoke('hermes:connection-config:apply', payload),
   testConnectionConfig: payload => ipcRenderer.invoke('hermes:connection-config:test', payload),
