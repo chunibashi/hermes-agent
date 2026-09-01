@@ -155,7 +155,7 @@ class TestBranchSeedLineageDivergence:
         _compact(db, "sess1", "child1", watermark=watermark)
 
         # The branch child is created with the marker, exactly as
-        # _ensure_session_db_row / session.branch stamp it. It copies the
+        # _ensure_session_db_row / session.branch stamp it.  It copies the
         # parent's SUMMARY + tail as its own transcript.
         db.create_session(
             "branch1",
@@ -174,4 +174,61 @@ class TestBranchSeedLineageDivergence:
         assert contents == [m["content"] for m in SUMMARY], (
             "a marked branch child must not re-inherit the parent lineage "
             f"(got {len(contents)} rows, expected {len(SUMMARY)})"
+        )
+
+    def test_row_id_cut_extends_through_consecutive_assistant_rows(
+        self, db: SessionDB
+    ) -> None:
+        """After a tool-heavy turn the frontend merges several assistant rows
+        into one ChatMessage whose row_id is the FIRST row of the merge.
+        ``session.branch`` must extend the cut past the matching row through
+        the rest of the consecutive assistant rows so the whole merged reply
+        is preserved, not just its first chunk.
+        """
+        db.create_session("sess2", source="test")
+        db.append_message("sess2", role="user", content="hello")
+        # The assistant reply is fragmented across several rows with tool
+        # results between them — the pattern the frontend merges into one bubble.
+        db.append_message("sess2", role="assistant", content="thinking step 1")
+        db.append_message("sess2", role="tool", content="tool result 1")
+        db.append_message("sess2", role="assistant", content="thinking step 2")
+        db.append_message("sess2", role="tool", content="tool result 2")
+        db.append_message("sess2", role="assistant", content="thinking step 3")
+        db.append_message("sess2", role="assistant", content="final answer here")
+
+        _, raw_history = db.get_resume_conversations("sess2")
+
+        # Apply the same filtering as _visible_branch_history.
+        visible = []
+        for m in raw_history:
+            if m.get("role") not in {"user", "assistant"}:
+                continue
+            if not m.get("content", "").strip():
+                continue
+            visible.append(dict(m))
+
+        # The user clicks the merged bubble (row_id = first assistant row,
+        # "thinking step 1").  Find the matching row and cut.
+        row_id = visible[1]["_row_id"]  # first assistant row
+        cut = None
+        for idx, m in enumerate(visible):
+            if m.get("_row_id") == row_id:
+                cut = idx
+                break
+        assert cut == 1, f"expected cut at index 1, got {cut}"
+
+        # Extend through consecutive assistant rows (the fix).
+        while cut + 1 < len(visible) and visible[cut + 1].get("role") == "assistant":
+            cut += 1
+
+        truncated = visible[: cut + 1]
+        assert len(truncated) == 5, (
+            f"cut should include all 5 user/assistant rows (user + 4 assistant), "
+            f"got {len(truncated)}: {[m['role'] for m in truncated]}"
+        )
+        assert [m["role"] for m in truncated] == [
+            "user", "assistant", "assistant", "assistant", "assistant",
+        ], (
+            "the assistant run should be preserved in full, not truncated "
+            f"at the first row: got {[m['role'] for m in truncated]}"
         )

@@ -3210,6 +3210,12 @@ def _(rid, params: dict) -> dict:
                     cut = idx
                     break
             if cut is not None:
+                # The frontend merges a turn's consecutive assistant rows into
+                # one ChatMessage whose row_id is the FIRST row of the merge.
+                # Extend the cut through the rest of that assistant run so the
+                # whole merged reply is preserved, not just its first chunk.
+                while cut + 1 < len(history) and history[cut + 1].get("role") == "assistant":
+                    cut += 1
                 history = history[: cut + 1]
             else:
                 # The clicked row was filtered out of this projection (e.g. it
