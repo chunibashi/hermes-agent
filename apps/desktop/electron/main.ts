@@ -17608,11 +17608,13 @@ app.whenReady().then(() => {
   installDownloadHandling()
   registerMediaProtocol()
   installEmbedReferer()
-  startYouTubeEmbedProxy().then(({ port }) => {
-    embedProxyPort = port
-  }).catch(() => {
-    // Non-fatal: YouTube embeds may show Error 153 on file:// origins.
-  })
+  startYouTubeEmbedProxy()
+    .then(({ port }) => {
+      embedProxyPort = port
+    })
+    .catch(() => {
+      // Non-fatal: YouTube embeds may show Error 153 on file:// origins.
+    })
   installRemoteHeaderRules()
   registerDeepLinkProtocol()
 

@@ -29,6 +29,7 @@ import { useStoreSelector } from '@/lib/use-session-slice'
 import { cn } from '@/lib/utils'
 import { $localModelsEnabled } from '@/store/local-models-flag'
 import { $localRuntimeJobs, runningModelDownloads, watchLocalRuntimeJobs } from '@/store/local-runtime-jobs'
+import { $favoriteModels, isFavorite, setFavoriteModels, toggleFavorite } from '@/store/model-favorites'
 import {
   $visibleModels,
   collapseModelFamilies,
@@ -40,7 +41,6 @@ import {
 } from '@/store/model-visibility'
 import { $collapsedProviders, toggleCollapsedProvider } from '@/store/provider-collapse'
 import { $defaultReasoningEffort } from '@/store/session'
-import { $favoriteModels, isFavorite, setFavoriteModels, toggleFavorite } from '@/store/model-favorites'
 import type { LocalModelLoadProgress, ModelOptionProvider, ModelOptionsResponse } from '@/types/hermes'
 
 import { type FastControl, ModelEditSubmenu, resolveFastControl } from './model-edit-submenu'
@@ -286,13 +286,7 @@ export function ModelCatalogMenu({
 
   const groups = useMemo(
     () =>
-      groupModels(
-        pickerProviders,
-        search,
-        { model: current.model, provider: current.provider },
-        shownKeys,
-        favorites
-      ),
+      groupModels(pickerProviders, search, { model: current.model, provider: current.provider }, shownKeys, favorites),
     [pickerProviders, search, current.model, current.provider, shownKeys, favorites]
   )
 
@@ -514,7 +508,10 @@ export function ModelCatalogMenu({
         <DropdownMenuItem className={dropdownMenuRow} disabled>
           {error}
         </DropdownMenuItem>
-      ) : groups.length === 0 && moaPresets.length === 0 && favoriteEntries.length === 0 && shownDownloads.length === 0 ? (
+      ) : groups.length === 0 &&
+        moaPresets.length === 0 &&
+        favoriteEntries.length === 0 &&
+        shownDownloads.length === 0 ? (
         <DropdownMenuItem className={dropdownMenuRow} disabled>
           {copy.noModels}
         </DropdownMenuItem>
@@ -530,6 +527,7 @@ export function ModelCatalogMenu({
                   (current.model === family.id || current.model === family.fastId)
                     ? current.model
                     : null
+
                 const isCurrent = activeId !== null
                 const name = modelDisplayParts(family.id).name
                 const caps = provider.capabilities?.[family.id]
@@ -560,6 +558,7 @@ export function ModelCatalogMenu({
                 }
 
                 const faved = isFavorite(favorites, provider.slug, family.id)
+
                 const toggleFav = (event: React.MouseEvent) => {
                   event.stopPropagation()
                   event.preventDefault()
@@ -591,9 +590,7 @@ export function ModelCatalogMenu({
                         <HighlightMatches query={search} text={name} />
                         {meta ? <span className="text-(--ui-text-tertiary)"> {meta}</span> : null}
                       </span>
-                      {isCurrent ? (
-                        <Codicon className="ml-auto text-foreground" name="check" size="0.75rem" />
-                      ) : null}
+                      {isCurrent ? <Codicon className="ml-auto text-foreground" name="check" size="0.75rem" /> : null}
                     </DropdownMenuSubTrigger>
                     <ModelEditSubmenu
                       canDisableReasoning={caps?.can_disable_reasoning}
@@ -661,7 +658,8 @@ export function ModelCatalogMenu({
                     // Managed local model loading into memory right now:
                     // real load percent, keyed by exact model id (remote
                     // providers never collide with GGUF stems).
-                    const loadProgress = loadingModels[family.id] ?? (family.fastId ? loadingModels[family.fastId] : undefined)
+                    const loadProgress =
+                      loadingModels[family.id] ?? (family.fastId ? loadingModels[family.fastId] : undefined)
 
                     // Effective settings for this row: the live choice when it's
                     // the active model, otherwise its remembered preset. Row
@@ -685,6 +683,7 @@ export function ModelCatalogMenu({
                       .join(' ')
 
                     const faved = isFavorite(favorites, group.provider.slug, family.id)
+
                     const toggleFav = (event: React.MouseEvent) => {
                       event.stopPropagation()
                       event.preventDefault()
@@ -774,7 +773,9 @@ export function ModelCatalogMenu({
                   })}
                 {!collapsed &&
                   slug === LOCAL_PROVIDER_SLUG &&
-                  shownDownloads.map(job => <DownloadingModelRow jobId={job.jobId} key={job.jobId} target={job.target} />)}
+                  shownDownloads.map(job => (
+                    <DownloadingModelRow jobId={job.jobId} key={job.jobId} target={job.target} />
+                  ))}
               </DropdownMenuGroup>
             )
           })}
@@ -852,10 +853,7 @@ function DownloadingModelRow({ jobId, target }: { jobId: string; target: string 
   const { t } = useI18n()
   const copy = t.modelPicker
 
-  const percent = useStoreSelector(
-    $localRuntimeJobs,
-    jobs => jobs.find(job => job.job_id === jobId)?.percent ?? null
-  )
+  const percent = useStoreSelector($localRuntimeJobs, jobs => jobs.find(job => job.job_id === jobId)?.percent ?? null)
 
   return (
     <DropdownMenuItem

@@ -77,10 +77,7 @@ export default function YouTubeEmbedRenderer({ descriptor }: { descriptor: Frame
     }
   }, [])
 
-  const src = useMemo(
-    () => youtubeSrc(descriptor.embedUrl, proxyPort),
-    [descriptor.embedUrl, proxyPort]
-  )
+  const src = useMemo(() => youtubeSrc(descriptor.embedUrl, proxyPort), [descriptor.embedUrl, proxyPort])
 
   // Wait for the proxy-port probe before rendering — otherwise the iframe
   // briefly loads the direct URL (Error 153 on file://) before the proxy URL.

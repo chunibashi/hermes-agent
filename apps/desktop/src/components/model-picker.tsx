@@ -1,5 +1,5 @@
-import { useQuery } from '@tanstack/react-query'
 import { useStore } from '@nanostores/react'
+import { useQuery } from '@tanstack/react-query'
 import { useEffect, useMemo, useState } from 'react'
 
 import { getLocalModelsStatus } from '@/hermes'
@@ -7,11 +7,11 @@ import { useI18n } from '@/i18n'
 import { modelOptionsQueryKey, requestModelOptions } from '@/lib/model-options'
 import { modelSearchText } from '@/lib/model-search-text'
 import { currentPickerSelection } from '@/lib/model-status-label'
-import { useStoreSelector } from '@/lib/use-session-slice'
 import { normalize } from '@/lib/text'
-import { $favoriteModels, isFavorite, setFavoriteModels, toggleFavorite } from '@/store/model-favorites'
+import { useStoreSelector } from '@/lib/use-session-slice'
 import { $localModelsEnabled } from '@/store/local-models-flag'
 import { $localRuntimeJobs, runningModelDownloads, watchLocalRuntimeJobs } from '@/store/local-runtime-jobs'
+import { $favoriteModels, isFavorite, setFavoriteModels, toggleFavorite } from '@/store/model-favorites'
 import type { LocalModelLoadProgress, ModelOptionProvider, ModelPricing } from '@/types/hermes'
 
 import type { HermesGateway } from '../hermes'
@@ -441,9 +441,7 @@ function ModelResults({
                           style={{ width: `${Math.max(2, loadProgress.percent)}%` }}
                         />
                       </span>
-                      <span className="text-[0.62rem] tabular-nums text-muted-foreground">
-                        {loadProgress.percent}%
-                      </span>
+                      <span className="text-[0.62rem] tabular-nums text-muted-foreground">{loadProgress.percent}%</span>
                     </span>
                   )}
                   {locked && (
@@ -487,17 +485,10 @@ function DownloadingModelRow({ jobId, target }: { jobId: string; target: string 
   const { t } = useI18n()
   const copy = t.modelPicker
 
-  const percent = useStoreSelector(
-    $localRuntimeJobs,
-    jobs => jobs.find(job => job.job_id === jobId)?.percent ?? null
-  )
+  const percent = useStoreSelector($localRuntimeJobs, jobs => jobs.find(job => job.job_id === jobId)?.percent ?? null)
 
   return (
-    <CommandItem
-      className="flex items-center gap-2 pl-6 font-mono opacity-60"
-      disabled
-      value={`downloading:${jobId}`}
-    >
+    <CommandItem className="flex items-center gap-2 pl-6 font-mono opacity-60" disabled value={`downloading:${jobId}`}>
       <span className="min-w-0 flex-1 truncate">{target}</span>
       <span className="flex shrink-0 items-center gap-1.5" title={copy.downloading}>
         <span className="h-1 w-16 overflow-hidden rounded-full bg-(--ui-bg-tertiary)">

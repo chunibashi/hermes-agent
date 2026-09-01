@@ -2156,9 +2156,9 @@ export function useSessionActions({
       // when authoritative is unavailable, branchMessages may end at a different
       // row (the local atom's tail), causing the backend to amputate the branch.
       const clickedMessage = messageId
-        ? (authoritativeMessages ?? []).find(m => m.id === messageId) ??
-          messages.find(m => m.id === messageId)
+        ? ((authoritativeMessages ?? []).find(m => m.id === messageId) ?? messages.find(m => m.id === messageId))
         : undefined
+
       const branchPointRowId = clickedMessage?.rowId
 
       return forkBranch(

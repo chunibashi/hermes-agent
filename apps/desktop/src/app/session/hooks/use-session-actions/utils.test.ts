@@ -344,12 +344,9 @@ describe('selectBranchMessages', () => {
       msg('tail-assistant', 'assistant', 'latest answer', { rowId: 14 })
     ]
 
-    expect(selectBranchMessages(local, authoritative, 'clicked-outside-live-atom').map(message => message.content)).toEqual([
-      'first question',
-      'first answer',
-      'latest question',
-      'latest answer'
-    ])
+    expect(
+      selectBranchMessages(local, authoritative, 'clicked-outside-live-atom').map(message => message.content)
+    ).toEqual(['first question', 'first answer', 'latest question', 'latest answer'])
   })
 
   it('slices the authoritative transcript at the clicked id when it is present there but missing locally', () => {

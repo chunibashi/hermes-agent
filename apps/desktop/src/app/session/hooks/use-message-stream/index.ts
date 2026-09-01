@@ -409,13 +409,7 @@ export function useMessageStream({
   )
 
   const appendReasoningDelta = useCallback(
-    (
-      sessionId: string,
-      delta: string,
-      replace = false,
-      occurredAt = Date.now() / 1000,
-      fillOnly = false
-    ) => {
+    (sessionId: string, delta: string, replace = false, occurredAt = Date.now() / 1000, fillOnly = false) => {
       if (!delta) {
         return
       }
