@@ -152,6 +152,25 @@ describe('useMeasuredDuration', () => {
     expect(screen.getByTestId('measured').textContent).toBe('6')
   })
 
+  // The live message object is re-created on interim sealing / turn settle,
+  // so the watching disclosure unmounts WITHOUT first seeing active=false.
+  // The unmount cleanup must freeze the elapsed into the registry, or the
+  // remounted block loses its measured duration and the label flips from
+  // "thought briefly" to the untimed "thought".
+  it('freezes the duration when unmounted while still watching', () => {
+    const first = render(<DurationProbe active timerKey="reasoning:m1:0" />)
+
+    act(() => {
+      vi.advanceTimersByTime(5_000)
+    })
+
+    first.unmount()
+
+    render(<DurationProbe active={false} timerKey="reasoning:m1:0" />)
+
+    expect(screen.getByTestId('measured').textContent).toBe('5')
+  })
+
   it('measures each key separately', () => {
     const first = render(<DurationProbe active timerKey="reasoning:m1:0" />)
 

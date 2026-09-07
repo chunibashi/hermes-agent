@@ -29,6 +29,7 @@ import { useStoreSelector } from '@/lib/use-session-slice'
 import { cn } from '@/lib/utils'
 import { $localModelsEnabled } from '@/store/local-models-flag'
 import { $localRuntimeJobs, runningModelDownloads, watchLocalRuntimeJobs } from '@/store/local-runtime-jobs'
+import { $favoriteModels, isFavorite, setFavoriteModels, toggleFavorite } from '@/store/model-favorites'
 import {
   $visibleModels,
   collapseModelFamilies,
@@ -40,7 +41,6 @@ import {
 } from '@/store/model-visibility'
 import { $collapsedProviders, toggleCollapsedProvider } from '@/store/provider-collapse'
 import { $defaultReasoningEffort } from '@/store/session'
-import { $favoriteModels, isFavorite, setFavoriteModels, toggleFavorite } from '@/store/model-favorites'
 import type { LocalModelLoadProgress, ModelOptionProvider, ModelOptionsResponse } from '@/types/hermes'
 
 import { type FastControl, ModelEditSubmenu, resolveFastControl } from './model-edit-submenu'
@@ -530,6 +530,7 @@ export function ModelCatalogMenu({
                   (current.model === family.id || current.model === family.fastId)
                     ? current.model
                     : null
+
                 const isCurrent = activeId !== null
                 const name = modelDisplayParts(family.id).name
                 const caps = provider.capabilities?.[family.id]
@@ -560,6 +561,7 @@ export function ModelCatalogMenu({
                 }
 
                 const faved = isFavorite(favorites, provider.slug, family.id)
+
                 const toggleFav = (event: React.MouseEvent) => {
                   event.stopPropagation()
                   event.preventDefault()
@@ -687,6 +689,7 @@ export function ModelCatalogMenu({
                       .join(' ')
 
                     const faved = isFavorite(favorites, group.provider.slug, family.id)
+
                     const toggleFav = (event: React.MouseEvent) => {
                       event.stopPropagation()
                       event.preventDefault()

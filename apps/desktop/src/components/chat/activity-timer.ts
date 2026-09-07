@@ -93,18 +93,43 @@ export function useMeasuredDuration(active: boolean, timerKey: string): null | n
   const elapsed = useElapsedSeconds(active, timerKey)
   const [watching, setWatching] = useState(false)
   const [measured, setMeasured] = useState<null | number>(() => durationByKey.get(timerKey) ?? null)
+  // Imperative flag for the unmount cleanup below: was a measurement in
+  // flight when this component went away? React state is already gone by
+  // teardown time, so the cleanup reads this ref (written directly in the
+  // effect body below, never mirrored from state).
+  const watchingRef = useRef(false)
 
+  // Not an atom mirror: an imperative in-flight flag the unmount cleanup
+  // reads after React state is already gone (prop-mirror exemption class).
+  // eslint-disable-next-line no-restricted-syntax -- watchingRef is written imperatively inside the effect
   useEffect(() => {
     if (active) {
-      setWatching(true)
-    } else if (watching) {
+      watchingRef.current = true
+    } else if (watchingRef.current) {
       const finalElapsed = Math.max(elapsed, Math.floor((Date.now() - startedAt(timerKey)) / 1000))
 
-      setWatching(false)
+      watchingRef.current = false
       durationByKey.set(timerKey, finalElapsed)
       setMeasured(finalElapsed)
     }
-  }, [active, elapsed, timerKey, watching])
+    // `watching` state is no longer read here — the ref above is the single
+    // source of the in-flight flag, so the label flip and the unmount freeze
+    // can never disagree about whether the block was being measured.
+  }, [active, elapsed, timerKey])
+
+  // Unmount while still watching: the message object identity changes on
+  // settle/interim sealing (new ChatMessage → new ThreadMessage), remounting
+  // every disclosure. Without freezing the elapsed here, the remounted block
+  // finds no duration in the registry and silently degrades to the untimed
+  // "已思考" label — the "思考了片刻 → 已思考" flip the user reported.
+  useEffect(
+    () => () => {
+      if (watchingRef.current) {
+        durationByKey.set(timerKey, Math.max(0, Math.floor((Date.now() - startedAt(timerKey)) / 1000)))
+      }
+    },
+    [timerKey]
+  )
 
   return measured
 }

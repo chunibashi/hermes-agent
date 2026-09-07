@@ -107,7 +107,16 @@ def _relay_thinking(agent: Any, content: str) -> None:
             pass
     elif _think_text:
         try:
-            agent.tool_progress_callback("reasoning.available", "_thinking", _think_text[:500], None)
+            # Send the FULL thinking, not a 500-char preview. For models that
+            # embed reasoning inside content think tags (deepseek-v4-flash via
+            # OpenAI-compatible relays, MiniMax-M2.7, etc.) there is NO separate
+            # reasoning.delta stream — reasoning.available IS the only channel
+            # the desktop/tui have for showing the thinking. Truncating it made
+            # the desktop's thinking panel stop mid-sentence while the DB kept
+            # the complete reasoning (fix 81dd13a8be; regressed by the
+            # turn_response_intake extraction 67ef2e50fe which re-introduced
+            # the [:500] cap).
+            agent.tool_progress_callback("reasoning.available", "_thinking", _think_text, None)
         except Exception:
             pass
 

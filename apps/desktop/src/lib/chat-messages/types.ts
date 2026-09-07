@@ -10,6 +10,12 @@ export interface TimelinePartMetadata {
   timestamp?: number
   /** Unix seconds when this segment stopped or handed off to the next one. */
   completedAt?: number
+  /** How a reasoning part's text was delivered: streamed token deltas
+   * (`reasoning.delta`) or whole-block relays (`reasoning.available`, one
+   * per API call for models that embed thinking in content <think> tags).
+   * `reasoning.available` fill semantics accumulate later blocks onto the
+   * last `available` part instead of clobbering or dropping them. */
+  source?: 'delta' | 'available'
 }
 
 export type ChatMessagePart = Exclude<ThreadMessageLike['content'], string>[number] & TimelinePartMetadata

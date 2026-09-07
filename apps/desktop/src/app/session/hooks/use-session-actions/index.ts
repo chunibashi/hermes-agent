@@ -2414,6 +2414,8 @@ export function useSessionActions({
           stored?.cwd?.trim(),
           profile,
           undefined,
+          // Whole-parent branch: no clicked-message row to cut at.
+          undefined,
           ownerRoute
         )
       } catch (err) {

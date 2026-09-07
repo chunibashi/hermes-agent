@@ -437,18 +437,39 @@ export function useMessageStream({
           // stop at the block boundary (half the reasoning missing). Only
           // seed from the block when no reasoning has been accumulated yet.
           if (fillOnly) {
+            // Dual-channel models (reasoning.delta + whole-block available at
+            // turn end): the deltas already accumulated the thinking — the
+            // block must only seed when nothing arrived.
+            const hasStreamedDelta = parts.some(
+              p => p?.type === 'reasoning' && (p as { source?: string }).source === 'delta'
+            )
+
+            if (hasStreamedDelta) {
+              return parts
+            }
+
             const hasReasoning = parts.some(
               p => p?.type === 'reasoning' && typeof p.text === 'string' && p.text.trim().length > 0
             )
 
             if (hasReasoning) {
-              return parts
+              // Single-channel model, later block (deepseek, MiniMax): a
+              // tool-using turn relays EVERY API call's thinking as its own
+              // reasoning.available block. Each must surface as its OWN
+              // disclosure (groupPartByType splits on the tool parts between
+              // them) instead of being dropped — append as a fresh part so
+              // the earlier block keeps its own label and timeline position.
+              return [...parts, reasoningPart(delta, occurredAt, 'available')]
             }
 
-            // No streamed reasoning yet (single-channel model: deepseek,
+            // No reasoning at all yet (single-channel model: deepseek,
             // MiniMax, etc.). Prepend the full block so it lands before
             // tool calls — matches the logical timeline (think → act) and
-            // preserves any tool/terminal parts already in the stream.
+            // preserves any tool/terminal parts already in the stream. The
+            // FIRST block is not tagged `available`: it passes through the
+            // normal in-progress/elapsed semantics (it briefly IS the only
+            // part, so the disclosure reads "Thinking" then reports its
+            // measured duration), while later blocks arrive already complete.
             return [reasoningPart(delta, occurredAt), ...parts]
           }
 

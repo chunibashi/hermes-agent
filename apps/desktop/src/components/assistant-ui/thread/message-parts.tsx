@@ -129,7 +129,12 @@ const ThinkingDisclosure: FC<{
   // Required: the block's duration is remembered against this key, so a
   // component that mounts after the block finished can still report it.
   timerKey: string
-}> = ({ children, completedAt, messageRunning = false, pending = false, timestamp, timerKey }) => {
+  // Whether this thinking block is part of the CURRENTLY RUNNING turn's live
+  // activity (a streamed-delta block mid-flow, or a block-relayed one that
+  // just arrived). Latching a live block keeps its preview open through the
+  // settle; blocks that mount already finished stay collapsed.
+  live?: boolean
+}> = ({ children, completedAt, messageRunning = false, pending = false, timestamp, timerKey, live = false }) => {
   const { t } = useI18n()
   const reasoningCollapsedByDefault = useStore($reasoningCollapsedByDefault)
   // `null` = no explicit user toggle yet. Live reasoning remains visible by
@@ -146,7 +151,7 @@ const ThinkingDisclosure: FC<{
   // a still-running turn) never latch, so they stay collapsed.
   const [sawLivePreview, setSawLivePreview] = useState(false)
 
-  if (pending && !sawLivePreview) {
+  if (live && !sawLivePreview) {
     setSawLivePreview(true)
   }
 
@@ -264,10 +269,26 @@ const ReasoningAccordionGroup: FC<{ children?: ReactNode; endIndex: number; star
   const messageId = useAuiState(s => s.message.id)
   const messageRunning = useAuiState(s => s.message.status?.type === 'running')
 
+  // A block-relayed thinking part (`reasoning.available` with source:
+  // 'available': later blocks of a single-channel model's turn — deepseek,
+  // MiniMax) arrives WHOLE: the model already finished thinking when the
+  // block lands, so it must not join the group's in-progress timer — it
+  // reads the untimed finished label ("已思考") from arrival onward. The
+  // FIRST block of the turn is deliberately untagged (fillOnly seeds it
+  // into an empty message) and keeps the normal elapsed semantics: it reads
+  // "Thinking" while live, then reports its measured duration — the
+  // "思考了片刻" row.
+  const isBlockRelayed = useAuiState(s =>
+    s.message.parts
+      .slice(Math.max(0, startIndex), endIndex + 1)
+      .some(p => p?.type === 'reasoning' && (p as { source?: string }).source === 'available')
+  )
+
   const pending = useAuiState(
     s =>
       s.thread.isRunning &&
       s.message.status?.type === 'running' &&
+      !isBlockRelayed &&
       s.message.parts
         .slice(Math.max(0, startIndex), endIndex + 1)
         .some(p => p?.type === 'reasoning' && p.status?.type !== 'complete')
@@ -312,6 +333,7 @@ const ReasoningAccordionGroup: FC<{ children?: ReactNode; endIndex: number; star
     // report the running total as each block's duration.
     <ThinkingDisclosure
       completedAt={completedAt}
+      live={messageRunning && (pending || isBlockRelayed)}
       messageRunning={messageRunning}
       pending={pending}
       timerKey={`reasoning:${messageId}:${startIndex}`}

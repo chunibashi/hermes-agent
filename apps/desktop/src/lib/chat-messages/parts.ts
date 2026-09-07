@@ -6,8 +6,13 @@ export function textPart(text: string, timestamp?: number): ChatMessagePart {
   return { type: 'text', text, ...(timestamp !== undefined ? { timestamp } : {}) }
 }
 
-export function reasoningPart(text: string, timestamp?: number): ChatMessagePart {
-  return { type: 'reasoning', text, ...(timestamp !== undefined ? { timestamp } : {}) }
+export function reasoningPart(text: string, timestamp?: number, source?: 'delta' | 'available'): ChatMessagePart {
+  return {
+    type: 'reasoning',
+    text,
+    ...(timestamp !== undefined ? { timestamp } : {}),
+    ...(source !== undefined ? { source } : {})
+  }
 }
 
 const MEDIA_LINE_RE = /(^|\n)[\t ]*[`"']?MEDIA:\s*(?<line>`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|\S+)[`"']?[\t ]*(\n|$)/g
@@ -252,7 +257,11 @@ function appendStreamPart(
   const tail = next[tailIndex]
 
   if (tail?.type === type && tail.completedAt === undefined) {
-    next[tailIndex] = { ...tail, text: `${tail.text}${delta}` } as ChatMessagePart
+    next[tailIndex] = {
+      ...tail,
+      text: `${tail.text}${delta}`,
+      ...(type === 'reasoning' ? { source: 'delta' as const } : {})
+    } as ChatMessagePart
 
     return { index: tailIndex, parts: next }
   }
@@ -266,7 +275,7 @@ function appendStreamPart(
   }
 
   const STREAM_PART: Record<'reasoning' | 'text', (text: string, timestamp?: number) => ChatMessagePart> = {
-    reasoning: reasoningPart,
+    reasoning: (text, timestamp) => reasoningPart(text, timestamp, 'delta'),
     text: textPart
   }
 
