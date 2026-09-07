@@ -499,6 +499,71 @@ class TestExternalDriftGuard:
         assert path.stat().st_size == original_size
 
 
+# =========================================================================
+# Structured index guard (review-fork consolidation wipe, 2026-09)
+#
+# This profile's MEMORY.md keeps a curated "# 核心规则" + "§ Keywords"
+# index as ONE §-entry. It round-trips cleanly (well under the char limit),
+# so _detect_external_drift sees nothing — and a legitimate replace()
+# through the review fork's memory tool rewrote the whole index to a
+# keyword list, flattening the structured file. The index is rebuilt only
+# by cron-compress scripts writing the file directly.
+# =========================================================================
+
+
+class TestStructuredIndexGuard:
+    """The curated "# 核心规则" + "§ Keywords" index entry must be immutable through
+    the memory tool: a review-fork consolidation once rewrote it wholesale via a
+    legitimate replace() (it parses as one big § entry, so drift detection saw
+    nothing) and flattened the whole structured file."""
+
+    INDEX = "# 核心规则\n- 规则A\n\n§ Keywords\n### Env\nkw-a · kw-b"
+
+    def _seed(self, store):
+        store.memory_entries = []
+        path = store._path_for("memory")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(self.INDEX, encoding="utf-8")
+        store.load_from_disk()
+        assert store._index_entry_at(store.memory_entries) is not None
+
+    def test_replace_index_entry_refused(self, store):
+        self._seed(store)
+        result = store.replace("memory", "核心规则", "consolidated shorter entry")
+        assert result["success"] is False
+        assert "structured memory index" in result["error"]
+        # Untouched on disk.
+        assert "# 核心规则" in store._path_for("memory").read_text(encoding="utf-8")
+
+    def test_remove_index_entry_refused(self, store):
+        self._seed(store)
+        result = store.remove("memory", "核心规则")
+        assert result["success"] is False
+        assert "structured memory index" in result["error"]
+
+    def test_batch_removal_of_index_refused(self, store):
+        self._seed(store)
+        result = store.apply_batch("memory", [
+            {"action": "add", "content": "new fact"},
+            {"action": "replace", "old_text": "核心规则", "content": "flattened"},
+        ])
+        assert result["success"] is False
+        assert "structured memory index" in result["error"]
+
+    def test_add_separate_entry_still_allowed(self, store):
+        self._seed(store)
+        result = store.add("memory", "new fact rides as its own entry")
+        assert result["success"] is True
+        after = store._path_for("memory").read_text(encoding="utf-8")
+        assert "# 核心规则" in after and "new fact rides" in after
+
+    def test_replacing_a_non_index_entry_still_allowed(self, store):
+        self._seed(store)
+        store.add("memory", "ordinary entry")
+        result = store.replace("memory", "ordinary entry", "ordinary entry v2")
+        assert result["success"] is True
+
+
 class TestUnreadableFileDoesNotWipeMemory:
     """A file that exists but can't be read must NOT be treated as empty.
 

@@ -21,6 +21,14 @@ MEMORY_BLOCK_HEADERS = {
 
 ENTRY_DELIMITER = "\n§\n"
 
+# Structured index entries: this profile's MEMORY.md keeps a curated
+# "# 核心规则" + "§ Keywords" index as ONE entry, rebuilt only by cron-compress
+# scripts. An autonomous review-fork consolidation once rewrote that whole entry
+# through a legitimate replace() (it parsed as one big § entry, well under the
+# limit, so drift detection saw nothing) — refuse tool-side rewrites of it;
+# new facts ride 'add' as separate entries.
+MEMORY_INDEX_MARKER = "# 核心规则"
+
 
 def _scan_memory_content(content: str) -> Optional[str]:
     """Error string if *content* matches injection/exfil patterns. Strict scope:
@@ -233,6 +241,29 @@ class MemoryStore:
         # content) but still refuse a failed read — add rewrites the WHOLE file.
         return self._mutate(target, _add, skip_drift=True)
 
+    @staticmethod
+    def _index_entry_at(entries: List[str]) -> Optional[int]:
+        """Index of the structured index entry (contains ``MEMORY_INDEX_MARKER``), or None."""
+        return next((i for i, e in enumerate(entries) if MEMORY_INDEX_MARKER in e), None)
+
+    def _index_guard(self, target: str, replaced: List[str], original: List[str]) -> Optional[Dict[str, Any]]:
+        """Error response when a replace/remove/batch would rewrite the structured index
+        entry (# 核心规则 + § Keywords). 'add' of SEPARATE entries stays allowed; the index
+        itself is rebuilt only by cron-compress scripts writing the file directly."""
+        old_idx = self._index_entry_at(original)
+        new_idx = self._index_entry_at(replaced)
+        if old_idx is not None and new_idx is not None and replaced[new_idx] != original[old_idx]:
+            return self._failure_with_entries(target, (
+                f"Refusing to modify the structured memory index entry (contains '{MEMORY_INDEX_MARKER}', "
+                f"{len(original[old_idx]):,} chars). It is the curated keyword index read before every task; "
+                f"rewriting it through the memory tool has already destroyed it once. New facts must go in "
+                f"SEPARATE 'add' entries — the index block itself is rebuilt only by the cron-compress script."))
+        if old_idx is not None and new_idx is None:
+            return self._failure_with_entries(target, (
+                f"Refusing to remove the structured memory index entry (contains '{MEMORY_INDEX_MARKER}'). "
+                f"Batch/replace must keep it untouched; new facts go in SEPARATE 'add' entries."))
+        return None
+
     def replace(self, target: str, old_text: str, new_content: str) -> Dict[str, Any]:
         """Find entry containing old_text substring, replace it with new_content."""
         new_content = new_content.strip()
@@ -262,6 +293,8 @@ class MemoryStore:
                     f"No entry matched '{old_text}'. Check current_entries below and retry with the exact text "
                     f"of the entry you want to {'replace' if new_content else 'remove'}.", current_entries=entries))
             replaced = entries[:idx] + ([] if new_content is None else [new_content]) + entries[idx + 1:]
+            if guard := self._index_guard(target, replaced, entries):
+                return guard
             if new_content is None:
                 return replaced, "Entry removed."
             new_total = len(ENTRY_DELIMITER.join(replaced))
@@ -317,6 +350,8 @@ class MemoryStore:
                                            (op.get("old_text") or "").strip(), f"Operation {i + 1} ({act or 'unknown'})")
                 if msg:
                     return self._failure_with_entries(target, msg + " No operations were applied (batch is all-or-nothing).")
+            if guard := self._index_guard(target, working, entries):
+                return guard
             if entries and not working:
                 # #103419: a consolidation batch that removes the last entry would
                 # commit an empty file as a normal successful write. Refuse; single
