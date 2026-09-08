@@ -563,6 +563,38 @@ class TestStructuredIndexGuard:
         result = store.replace("memory", "ordinary entry", "ordinary entry v2")
         assert result["success"] is True
 
+    USER_INDEX = "§ Keywords\n\n### Preferences\nkw-a · kw-b"
+
+    def _seed_user(self, store):
+        store.user_entries = []
+        path = store._path_for("user")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(self.USER_INDEX, encoding="utf-8")
+        store.load_from_disk()
+        assert store._index_entry_at(store.user_entries) is not None
+
+    def test_user_index_replace_refused(self, store):
+        """USER.md's '§ Keywords' index got the same review-fork flattening as
+        MEMORY.md's — the guard must cover both markers."""
+        self._seed_user(store)
+        result = store.replace("user", "Keywords", "two plain preference lines")
+        assert result["success"] is False
+        assert "structured memory index" in result["error"]
+        assert "§ Keywords" in store._path_for("user").read_text(encoding="utf-8")
+
+    def test_user_index_remove_refused(self, store):
+        self._seed_user(store)
+        result = store.remove("user", "Keywords")
+        assert result["success"] is False
+        assert "structured memory index" in result["error"]
+
+    def test_user_add_still_allowed(self, store):
+        self._seed_user(store)
+        result = store.add("user", "a plain user fact")
+        assert result["success"] is True
+        after = store._path_for("user").read_text(encoding="utf-8")
+        assert "§ Keywords" in after and "a plain user fact" in after
+
 
 class TestUnreadableFileDoesNotWipeMemory:
     """A file that exists but can't be read must NOT be treated as empty.
