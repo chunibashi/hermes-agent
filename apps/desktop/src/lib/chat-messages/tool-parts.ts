@@ -627,6 +627,60 @@ export function textFromUnknown(value: unknown, depth = 0): string {
   return String(value)
 }
 
+/**
+ * Result body of a stored tool row. REST transcript rows carry the full
+ * persisted content; the gateway resume projection ships only the 80-char
+ * `context` preview, so a result built from `context` alone is a title-side
+ * placeholder (single-key `{ context }`), never data. The old `name` tail of
+ * the fallback chain turned the tool's own name into a fake result — dropped.
+ */
+function storedToolRowResult(message: SessionMessage): unknown {
+  if (message.content && typeof message.content === 'object') {
+    return message.content
+  }
+
+  const text = textFromUnknown(message.content || message.text || '')
+
+  if (text.trim()) {
+    return parseStoredToolResult(text)
+  }
+
+  const context = typeof message.context === 'string' ? message.context.trim() : ''
+
+  return context ? { context } : {}
+}
+
+/**
+ * Persisted tool rows wrap high-risk output (web_search, browser_*) in an
+ * `<untrusted_tool_result>` trust envelope; the payload after the boilerplate
+ * header is the real result the model saw. Strip it so hydration recovers the
+ * structured result instead of a text blob the tool view can't mine — a raw
+ * string here is what made search previews vanish after a transcript refresh
+ * overwrote the live part with the stored one. Inner delimiter tokens are
+ * neutralized to hyphens by the backend, so the LAST close tag is the real one.
+ */
+function unwrapUntrustedToolPayload(value: string): string {
+  const trimmed = value.trim()
+  const openTag = trimmed.match(/^<untrusted_tool_result\b[^>]*>\s*/)
+
+  if (!openTag) {
+    return trimmed
+  }
+
+  const closeIndex = trimmed.lastIndexOf('</untrusted_tool_result>')
+
+  if (closeIndex <= openTag[0].length) {
+    return trimmed
+  }
+
+  const wrapped = trimmed.slice(openTag[0].length, closeIndex).trim()
+  // Header is one boilerplate line + a blank line; CRLF rows must not strand
+  // the divider inside `\r\n\r\n` where a literal '\n\n' search never matches.
+  const divider = /\r?\n\r?\n/.exec(wrapped)
+
+  return (divider ? wrapped.slice(divider.index + divider[0].length) : wrapped).trim()
+}
+
 function parseStoredToolResult(content: unknown): unknown {
   if (content && typeof content === 'object') {
     return content
@@ -638,10 +692,12 @@ function parseStoredToolResult(content: unknown): unknown {
     return ''
   }
 
+  const payloadText = unwrapUntrustedToolPayload(textContent)
+
   try {
-    return JSON.parse(textContent)
+    return JSON.parse(payloadText)
   } catch {
-    return textContent
+    return payloadText
   }
 }
 
@@ -669,7 +725,7 @@ export function toolPartFromStoredCall(call: unknown, fallbackIndex: number, tim
 export function applyStoredToolResult(messages: ChatMessage[], toolMessage: SessionMessage): boolean {
   const toolCallId = toolMessage.tool_call_id || undefined
   const toolName = toolMessage.tool_name || toolMessage.name || 'tool'
-  const content = toolMessage.content || toolMessage.text || toolMessage.context || toolMessage.name
+  const result = storedToolRowResult(toolMessage)
 
   for (let i = messages.length - 1; i >= 0; i -= 1) {
     const message = messages[i]
@@ -693,7 +749,7 @@ export function applyStoredToolResult(messages: ChatMessage[], toolMessage: Sess
     parts[partIndex] = {
       ...existing,
       completedAt: toolMessage.timestamp,
-      result: parseStoredToolResult(content),
+      result,
       isError: false
     } as ChatMessagePart
     messages[i] = { ...message, parts }
@@ -710,7 +766,7 @@ export function applyStoredToolResultToParts(
 ): ChatMessagePart[] | null {
   const toolCallId = toolMessage.tool_call_id || undefined
   const toolName = toolMessage.tool_name || toolMessage.name || 'tool'
-  const content = toolMessage.content || toolMessage.text || toolMessage.context || toolMessage.name
+  const result = storedToolRowResult(toolMessage)
 
   const partIndex = parts.findIndex(
     part =>
@@ -727,7 +783,7 @@ export function applyStoredToolResultToParts(
   next[partIndex] = {
     ...existing,
     completedAt: toolMessage.timestamp,
-    result: parseStoredToolResult(content),
+    result,
     isError: false
   } as ChatMessagePart
 
@@ -740,9 +796,13 @@ export function storedToolMessagePart(toolMessage: SessionMessage, fallbackIndex
   // Prefer the full arguments when the gateway projection carries them:
   // `context` is an 80-char display preview, and the expanded tool row
   // rebuilds the real command from args. Keep `context` alongside as the
-  // title-side placeholder.
+  // title-side placeholder. The result comes from the same helper the
+  // apply-stored path uses: a REST row carries the persisted content (the
+  // untrusted envelope stripped), a projection-only row degrades to the
+  // `{ context }` placeholder — never the tool's name as fake data.
   const storedArgs = parseMaybeJsonObject(toolMessage.args)
   const args = { ...storedArgs, ...(context ? { context } : {}) }
+  const result = storedToolRowResult(toolMessage)
 
   return {
     type: 'tool-call',
@@ -752,7 +812,7 @@ export function storedToolMessagePart(toolMessage: SessionMessage, fallbackIndex
     argsText: Object.keys(args).length ? JSON.stringify(args) : '',
     timestamp: toolMessage.timestamp,
     completedAt: toolMessage.timestamp,
-    result: context ? { context } : {},
+    result,
     isError: false
   }
 }

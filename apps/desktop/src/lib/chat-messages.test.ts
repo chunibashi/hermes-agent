@@ -87,6 +87,57 @@ describe('toChatMessages', () => {
     expect((toolPart as { args: { command?: string } }).args.command).toBe(longCommand)
   })
 
+  it('recovers the structured search result from a REST tool row with untrusted-wrapped JSON content', () => {
+    // Persisted web_search rows wrap their JSON payload in an
+    // <untrusted_tool_result> envelope. Hydration must strip the envelope and
+    // JSON-parse the payload so the tool view can mine search hits from the
+    // stored row itself — without this, a transcript refresh after a resume
+    // downgrades the row to a text blob and the search preview disappears.
+    const payload = JSON.stringify({
+      data: { web: [{ title: 'Hermes docs', url: 'https://example.com/docs', snippet: 'Desktop docs' }] },
+      success: true
+    })
+
+    const wrapped = `<untrusted_tool_result source="web_search">\r\nThe following content was retrieved from an external source.\r\n\r\n${payload}\r\n</untrusted_tool_result>`
+
+    const messages = toChatMessages([
+      { role: 'user', content: 'search', timestamp: 1 },
+      {
+        role: 'tool',
+        tool_call_id: 'call_abc123',
+        tool_name: 'web_search',
+        content: wrapped,
+        timestamp: 2
+      },
+      { role: 'assistant', content: 'Answer.', timestamp: 3, tool_calls: [{ id: 'call_abc123', function: { name: 'web_search', arguments: '{"query":"hermes"}' } }] }
+    ])
+
+    const part = messages.flatMap(m => m.parts).find(p => p.type === 'tool-call') as Extract<
+      ChatMessagePart,
+      { type: 'tool-call' }
+    >
+
+    expect(part.toolName).toBe('web_search')
+    expect(part.result).toEqual({
+      data: { web: [{ title: 'Hermes docs', url: 'https://example.com/docs', snippet: 'Desktop docs' }] },
+      success: true
+    })
+  })
+
+  it('does not fabricate a result from the tool name when a projection row has no content', () => {
+    const messages = toChatMessages([
+      { role: 'user', content: 'go', timestamp: 1 },
+      { role: 'tool', name: 'terminal', content: '', context: 'echo hi', args: { command: 'echo hi' }, timestamp: 2 }
+    ])
+
+    const part = messages.flatMap(m => m.parts).find(p => p.type === 'tool-call') as Extract<
+      ChatMessagePart,
+      { type: 'tool-call' }
+    >
+
+    expect(part.result).toEqual({ context: 'echo hi' })
+  })
+
   it('keeps a turn with interleaved tool-only rows in a single bubble', () => {
     const messages = toChatMessages([
       { role: 'assistant', content: 'Planning.', timestamp: 1 },
@@ -541,6 +592,80 @@ describe('preserveLocalAssistantErrors', () => {
 
     expect([message.timestamp, message.completedAt]).toEqual([1, 3])
     expect(message.parts[0]).toMatchObject({ completedAt: 3, timestamp: 1, type: 'text' })
+  })
+
+  it('keeps the live tool result when the durable row has no data (projection tool row)', () => {
+    // The gateway resume projection ships tool rows as {name, context, args}
+    // with no result and no tool_call_id; a live part that watched the tool
+    // finish carries the full result (search hits, stdout, ...). Reconciling
+    // must not downgrade the live data to the context placeholder.
+    const durable = toChatMessages([
+      { role: 'assistant', content: '', timestamp: 1, tool_calls: [{ id: 'tc1', function: { name: 'web_search', arguments: '{"query":"holidays"}' } }] },
+      { role: 'tool', name: 'web_search', content: '', context: 'holidays', args: { query: 'holidays' }, timestamp: 2 }
+    ])
+
+    const live: ChatMessage[] = [
+      {
+        id: 'assistant-stream',
+        parts: [
+          {
+            args: { query: 'holidays' },
+            completedAt: 2,
+            result: { data: { web: [{ title: 'result one', url: 'https://example.com/a' }] } },
+            timestamp: 1,
+            toolCallId: 'tc1',
+            toolName: 'web_search',
+            type: 'tool-call'
+          }
+        ],
+        role: 'assistant',
+        timestamp: 1
+      }
+    ]
+
+    const [message] = preserveLocalAssistantErrors(durable, live)
+
+    const part = message.parts.find(p => p.type === 'tool-call') as Extract<
+      ChatMessagePart,
+      { type: 'tool-call' }
+    >
+
+    expect(part.result).toEqual({ data: { web: [{ title: 'result one', url: 'https://example.com/a' }] } })
+  })
+
+  it('keeps the durable tool result when both rows carry data (stored is authoritative)', () => {
+    const durable = toChatMessages([
+      { role: 'assistant', content: '', timestamp: 1, tool_calls: [{ id: 'tc2', function: { name: 'terminal', arguments: '{"command":"echo hi"}' } }] },
+      { role: 'tool', name: 'terminal', tool_call_id: 'tc2', content: 'stored output', timestamp: 2 }
+    ])
+
+    const live: ChatMessage[] = [
+      {
+        id: 'assistant-stream',
+        parts: [
+          {
+            args: { command: 'echo hi' },
+            completedAt: 2,
+            result: { output: 'live output' },
+            timestamp: 1,
+            toolCallId: 'tc2',
+            toolName: 'terminal',
+            type: 'tool-call'
+          }
+        ],
+        role: 'assistant',
+        timestamp: 1
+      }
+    ]
+
+    const [message] = preserveLocalAssistantErrors(durable, live)
+
+    const part = message.parts.find(p => p.type === 'tool-call') as Extract<
+      ChatMessagePart,
+      { type: 'tool-call' }
+    >
+
+    expect(part.result).toBe('stored output')
   })
 
   it('preserves a local user+error pair when hydration omits the failed turn', () => {

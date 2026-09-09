@@ -56,6 +56,44 @@ const timelinePartMatch = (stored: ChatMessagePart, local: ChatMessagePart) => {
   return false
 }
 
+// A stored tool row built from the gateway resume projection has no result at
+// all, or only the single-key `{ context }` title placeholder (see
+// storedToolRowResult) — data the live part saw (search hits, stdout, diffs)
+// but the projection never carried. When the stored part is that poor, keep
+// the live result instead of letting the reconciliation below erase it.
+const partCarriesToolData = (part: ChatMessagePart): boolean => {
+  if (part.type !== 'tool-call' || part.result === undefined) {
+    return false
+  }
+
+  if (typeof part.result === 'string') {
+    return part.result.trim().length > 0
+  }
+
+  const keys = Object.keys(part.result as Record<string, unknown>)
+
+  return !(keys.length === 0 || (keys.length === 1 && keys[0] === 'context'))
+}
+
+const reconcileToolPart = (stored: ChatMessagePart, local: ChatMessagePart): ChatMessagePart => {
+  if (stored.type !== 'tool-call' || local.type !== 'tool-call') {
+    return stored
+  }
+
+  const merged = {
+    ...stored,
+    completedAt: latestBoundary(stored.completedAt, local.completedAt),
+    timestamp: earliestBoundary(stored.timestamp, local.timestamp),
+    // The part union declares `result` read-only; this cast is confined to the
+    // tool-call member where the field actually exists.
+    ...(partCarriesToolData(stored) || !partCarriesToolData(local)
+      ? {}
+      : { result: local.result as never })
+  }
+
+  return merged as ChatMessagePart
+}
+
 /** Keep richer live timing when durable hydration has only one timestamp per row. */
 function reconcileLocalAssistantTimeline(nextMessages: ChatMessage[], currentMessages: ChatMessage[]): ChatMessage[] {
   const localAssistants = currentMessages.filter(message => message.role === 'assistant' && !message.hidden)
@@ -102,11 +140,13 @@ function reconcileLocalAssistantTimeline(nextMessages: ChatMessage[], currentMes
       unusedLocalParts.delete(localIndex)
       const localPart = local.parts[localIndex]
 
-      return {
-        ...part,
-        completedAt: latestBoundary(part.completedAt, localPart.completedAt),
-        timestamp: earliestBoundary(part.timestamp, localPart.timestamp)
-      } as ChatMessagePart
+      return part.type === 'tool-call' && localPart.type === 'tool-call'
+        ? reconcileToolPart(part, localPart)
+        : ({
+            ...part,
+            completedAt: latestBoundary(part.completedAt, localPart.completedAt),
+            timestamp: earliestBoundary(part.timestamp, localPart.timestamp)
+          } as ChatMessagePart)
     })
 
     return {
