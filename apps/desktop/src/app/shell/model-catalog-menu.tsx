@@ -514,7 +514,7 @@ export function ModelCatalogMenu({
               <DropdownMenuLabel className={dropdownMenuSectionLabel}>★ {copy.favorites}</DropdownMenuLabel>
               {favoriteEntries.map(({ family, provider }) => {
                 const activeId =
-                  isCurrentProvider(provider, current.provider) &&
+                  catalogProviderMatches(provider, current.provider) &&
                   (current.model === family.id || current.model === family.fastId)
                     ? current.model
                     : null

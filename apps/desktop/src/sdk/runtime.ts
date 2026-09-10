@@ -13,11 +13,26 @@ import * as jsxRuntime from 'react/jsx-runtime'
 
 import * as sdk from './index'
 
+// Lazy getters, NOT eager object literal: rolldown can reorder module
+// initializers inside a shared chunk, so an eager `__HERMES_PLUGIN_SDK__: sdk`
+// could capture the namespace binding before `./index` runs its own
+// initializer (observed: `var Tg={...:Hb}` emitted before `var Hb=t({...})`,
+// leaving Tg.__HERMES_PLUGIN_SDK__ undefined → Object.keys(undefined) threw
+// on every disk-plugin load). Getters resolve at ACCESS time, by which point
+// all module initializers have run.
 const GLOBALS = {
-  __HERMES_PLUGIN_SDK__: sdk,
-  __HERMES_REACT__: React,
-  __HERMES_REACT_JSX__: jsxRuntime,
-  __HERMES_REACT_JSX_DEV__: jsxDevRuntime
+  get __HERMES_PLUGIN_SDK__() {
+    return sdk
+  },
+  get __HERMES_REACT__() {
+    return React
+  },
+  get __HERMES_REACT_JSX__() {
+    return jsxRuntime
+  },
+  get __HERMES_REACT_JSX_DEV__() {
+    return jsxDevRuntime
+  }
 } as const
 
 export function installPluginSdk(): void {
