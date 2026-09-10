@@ -95,8 +95,15 @@ def _own_live_lease_ids(*, exclude=None) -> set[str]:
 
 @contextlib.contextmanager
 def _other_runtime_lease_guard(session_id: str, session: dict):
-    """Release this runtime and lock sibling ownership through the DB write. Yields True (another runtime owns
-    the lifecycle -> preserve) when the guard can't be loaded/entered in 3 tries: unknown ownership never ends a row."""
+    """Release this runtime, probe sibling ownership, and return; the registry lock is held
+    ONLY during those registry ops, never across the caller's state.db teardown write.
+
+    Holding it across the DB write froze every session's bot-delivery poller for the whole
+    write (msvcrt raises EDEADLK after ~10s of contention, and ``_execute_write`` waits far
+    longer than that), so the check yields and the lock is already gone. Yields True (another
+    runtime owns the lifecycle -> preserve) when the guard can't be loaded/entered in 3 tries:
+    unknown ownership never ends a row.
+    """
     lease = session.get("active_session_lease")
     try:
         from hermes_cli.active_sessions import active_session_liveness_guard, release_active_session_liveness_guard
@@ -104,28 +111,25 @@ def _other_runtime_lease_guard(session_id: str, session: dict):
         logger.warning("Failed to load active session ownership guard; preserving session %s: %s", session_id, exc)
         yield True
         return
-    stack = contextlib.ExitStack()
-    active: list = []
+    released: list = []
     own_live_lease_ids = _own_live_lease_ids(exclude=lease)
 
-    def _enter() -> None:
-        stack.close()  # drop anything a half-failed previous attempt left behind
+    def _check() -> None:
         if lease is not None and getattr(lease, "enabled", False):
             guard = release_active_session_liveness_guard(lease, session_id, own_live_lease_ids=own_live_lease_ids)
         else:
             guard = active_session_liveness_guard(
                 session_id, registry_home=session.get("profile_home"), own_live_lease_ids=own_live_lease_ids)
-        active[:] = [stack.enter_context(guard)]
+        with guard as active:
+            released.append(active)
 
-    if (last_error := _lease_retry(3, _enter)) is not None:
-        stack.close()
+    if (last_error := _lease_retry(3, _check)) is not None:
         logger.warning("Failed to inspect active session leases; preserving session %s: %s", session_id, last_error)
         yield True
         return
     try:
-        yield active[0]
+        yield released[0]
     finally:
-        stack.close()
         if lease is not None and getattr(lease, "released", False) and session.get("active_session_lease") is lease:
             session.pop("active_session_lease", None)
 
@@ -193,6 +197,23 @@ def _lifecycle_own_sid(session: dict, sid_hint: str = "") -> str:
     return own_sid
 
 
+def _sibling_claimed_during_window(session_id: str, session: dict) -> bool:
+    """True when a live lease for ``session_id`` appeared after the ownership probe.
+
+    The probe and the durable end-stamp no longer share the registry lock (holding it
+    through a multi-second ``state.db`` write froze every Windows msvcrt lock waiter into
+    EDEADLK), so this verifies the decision after the fact. Registry unreadable -> True:
+    unknown ownership never leaves a row ended under a possibly-live sibling.
+    """
+    try:
+        from hermes_cli.active_sessions import active_session_registry_snapshot
+        entries = active_session_registry_snapshot(registry_home=session.get("profile_home"))
+    except Exception:
+        logger.debug("post-end lease recheck failed for %s", session_id, exc_info=True)
+        return True
+    return any(str(entry.get("session_id") or "") == session_id for entry in entries)
+
+
 def _finalize_session(session: dict | None, end_reason: str = "tui_close") -> None:
     """Best-effort finalize hook + memory commit; mirrors the CLI exit path so a force-quit mid-turn (double
     Ctrl-C, terminal close, SIGHUP) loses nothing."""
@@ -254,6 +275,24 @@ def _finalize_session(session: dict | None, end_reason: str = "tui_close") -> No
                         _tui_owns_lifecycle = False
                     elif _tui_owns_lifecycle:
                         db.end_session(session_id, end_reason)
+                        # The probe and this stamp no longer share the registry lock (see
+                        # _other_runtime_lease_guard): a lease that appeared in the gap means a
+                        # sibling went live under the decision -- undo the stamp and release the
+                        # lifecycle claim so its work is not interrupted either.
+                        if _sibling_claimed_during_window(session_id, session):
+                            try:
+                                db.reopen_session(session_id)
+                            except Exception:
+                                # The row stays end-stamped under a live sibling: louder than
+                                # a suppress — the next resume/reopen repairs it, but an
+                                # operator must be able to see why the ghost lingers.
+                                logger.warning(
+                                    "Failed to reopen end-stamp for session %s after the "
+                                    "sibling-claim race", session_id, exc_info=True)
+                            _tui_owns_lifecycle = False
+                            logger.info(
+                                "Reopened end-stamp for session %s: a sibling claimed its lease "
+                                "during the ownership window", session_id)
     # In-flight async delegations end WITH the session (no return address left). Always interrupt by THIS live UI
     # sid; by durable session_key only when the TUI owns the lifecycle — a viewer tab must not kill gateway work.
     with contextlib.suppress(Exception):

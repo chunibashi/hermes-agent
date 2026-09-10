@@ -683,8 +683,14 @@ def active_session_liveness_guard(
     session_id: str, *, registry_home: str | Path | None = None,
     own_live_lease_ids: set[str] | None = None,
 ) -> Iterator[bool]:
-    """Hold the registry lock while reporting whether ``session_id`` is leased, so no
-    new backend can acquire a lease between the check and the caller's ``end_session``."""
+    """Report whether ``session_id`` is leased under the registry lock. Callers must keep the
+    body SHORT: the lock serializes every session acquire/release/snapshot across processes, and
+    a long body (e.g. a multi-second state.db write) starves Windows ``msvcrt`` waiters, which
+    raise EDEADLK (Errno 36) after ~10s of contention. The desktop teardown path therefore
+    decides ownership here and end-stamps the durable row only after the lock is released: a
+    resume that lands inside that race window can have its row ended late, which the next
+    resume/reopen repairs — strictly better than freezing the whole registry meanwhile.
+    """
     state_path, lock_path = _lease_paths(registry_home=registry_home)
     with _FileLock(lock_path):
         entries = _prune_dead(_read_entries(state_path, strict=True), strict=True)
@@ -697,8 +703,9 @@ def active_session_liveness_guard(
 def release_active_session_liveness_guard(
     lease: ActiveSessionLease, session_id: str, *, own_live_lease_ids: set[str] | None = None,
 ) -> Iterator[bool]:
-    """Remove ``lease`` and hold its registry lock through a lifecycle write, making
-    cleanup one atomic decision (release, check siblings, end the durable row)."""
+    """Remove ``lease`` under the registry lock and report remaining sibling ownership. See
+    :func:`active_session_liveness_guard` for the keep-the-body-short contract (the lock must
+    not ride through the caller's durable ``end_session`` write)."""
     if not lease.enabled or lease.released:
         home = lease.state_path.parent.parent if lease.state_path is not None else None
         with active_session_liveness_guard(

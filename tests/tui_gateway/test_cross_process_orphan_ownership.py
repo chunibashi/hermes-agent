@@ -173,6 +173,45 @@ def test_orphan_guard_fails_closed_when_registry_is_unavailable(
         assert sibling_active is True
 
 
+def test_lease_guard_releases_registry_lock_before_body_runs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The teardown guard must not hold the registry lock through the caller's DB write.
+
+    A slow holder turns every Windows msvcrt waiter into EDEADLK (~10s) and freezes
+    session acquire/release fleet-wide (flock waits forever on POSIX), so the ownership
+    decision must be complete -- and the registry free -- by the time the body starts.
+    """
+    from hermes_cli import active_sessions
+
+    home = tmp_path / "guard-home"
+    lease, refusal = active_sessions.try_acquire_active_session(
+        session_id="guard-session", surface="tui", config={}, registry_home=home)
+    assert lease is not None and refusal is None
+    session = {"profile_home": home, "active_session_lease": lease}
+    monkeypatch.setattr(server, "_own_live_lease_ids", lambda *, exclude=None: {lease.lease_id})
+
+    acquired: list = []
+
+    def _sibling() -> None:
+        acquired.append(active_sessions.try_acquire_active_session(
+            session_id="sibling-session", surface="tui", config={}, registry_home=home))
+
+    with server._other_runtime_lease_guard("guard-session", session) as sibling_active:
+        assert sibling_active is False  # the only lease was this runtime's; release dropped it
+        probe = threading.Thread(target=_sibling, daemon=True)
+        probe.start()
+        probe.join(timeout=5.0)
+        # A sibling can claim the registry INSIDE the body: the old design held the file lock
+        # through the caller's durable write, so this join timed out (POSIX) or EDEADLK-ed.
+        assert not probe.is_alive() and len(acquired) == 1
+        other, other_msg = acquired[0]
+        assert other is not None and other_msg is None
+    # released lease dropped from the record at guard exit
+    assert "active_session_lease" not in session
+
+
+
 def test_desktop_claim_fails_closed_when_registry_setup_fails(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -346,6 +385,65 @@ def test_automatic_cleanup_reclaims_own_orphan_lease_not_treated_as_sibling(
 
     assert ended == [(session_id, "ws_orphan_reap")]
     assert active_session_registry_snapshot(registry_home=profile_home) == []
+
+
+def test_end_stamp_is_undone_when_a_sibling_claims_in_the_write_window(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The verify-after-write fence replaces what holding the lock used to buy.
+
+    The ownership probe and ``end_session`` no longer share the registry lock (that
+    freeze caused the EDEADLK storm), so a lease that appears inside the write window
+    must reopen the just-ended row and drop the lifecycle claim.
+    """
+    profile_home = tmp_path / "race-home"
+    session_id = "race-session"
+    ended: list[str] = []
+    reopened: list[str] = []
+
+    class _FakeDB:
+        def get_session(self, target: str) -> dict[str, str]:
+            return {"id": target, "source": "desktop"}
+
+        def end_session(self, target: str, reason: str) -> None:
+            ended.append(target)
+            # Simulate the sibling winning its lease exactly inside the unlock gap.
+            claim, msg = try_acquire_active_session(
+                session_id=target, surface="desktop", config={},
+                registry_home=profile_home, track_liveness=True)
+            assert claim is not None and msg is None
+
+        def reopen_session(self, target: str) -> None:
+            reopened.append(target)
+
+    @contextlib.contextmanager
+    def _profile_db(_session: dict):
+        yield _FakeDB()
+
+    monkeypatch.setattr(server, "_load_cfg", lambda: {})
+    monkeypatch.setattr(server, "_sessions", {})
+    monkeypatch.setattr(server, "_session_db", _profile_db)
+    monkeypatch.setattr(
+        server, "_notify_session_boundary", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        "tools.async_delegation.interrupt_for_session", lambda *args, **kwargs: None)
+
+    server._finalize_session(
+        {
+            "active_session_lease": None,
+            "agent": None,
+            "history": [],
+            "history_lock": threading.Lock(),
+            "profile_home": str(profile_home),
+            "session_key": session_id,
+            "slash_worker": None,
+            "source": "desktop",
+        },
+        end_reason="idle_timeout",
+    )
+
+    assert ended == [session_id]
+    assert reopened == [session_id]
 
 
 def test_liveness_guard_serializes_cross_process_acquire(tmp_path: Path) -> None:

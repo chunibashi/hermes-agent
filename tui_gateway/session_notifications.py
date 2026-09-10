@@ -117,6 +117,10 @@ def _notification_event_dedup_key(evt: dict) -> tuple:
 # past them and they can't wedge a later completed/blocked event behind an unclaimed row.
 _KANBAN_NOTIFY_KINDS = ("completed", "blocked", "gave_up", "crashed", "timed_out", "status", "archived", "unblocked")
 _KANBAN_POLL_SECONDS = _LOOP_POLL_SECONDS = 5.0  # /loop and /heartbeat share one idle-poll cadence
+# Bot live-delivery mailbox poll: takes the shared registry lock, so it rides a calm cadence
+# instead of the 0.5s queue-wake loop (see _notification_poller_loop).
+_DELIVERY_POLL_SECONDS = 2.0
+_DELIVERY_POLL_BACKOFF_MAX_S = 60.0
 
 
 def _notif_release_turn(session: dict) -> None:
@@ -555,13 +559,22 @@ def _notification_poller_loop(stop_event: threading.Event, sid: str, session: di
     emitted = session.setdefault("_notification_emitted", set())
     handle = lambda events, deferred: _notif_handle_ready(  # noqa: E731
         sid, session, events, emitted, process_registry, format_process_notification, deferred)
-    last_kanban_poll = last_loop_poll = 0.0
+    last_kanban_poll = last_loop_poll = last_delivery_poll = 0.0
+    delivery_backoff_s = _DELIVERY_POLL_SECONDS
     while not stop_event.is_set() and not session.get("_finalized"):
         now = time.monotonic()
-        try:
-            _poll_bot_live_delivery_once(sid, session)
-        except Exception:
-            logger.warning("Bot live-owner delivery poll failed", exc_info=True)
+        # The mailbox check takes the process-shared active-session registry lock, and Windows
+        # msvcrt waiters raise EDEADLK after ~10s of contention — a hot 0.5s loop turns any slow
+        # holder into a warning storm and steals lock slots from session acquire/release. Poll at
+        # a calm cadence and back off (to _DELIVERY_POLL_BACKOFF_MAX_S) while it keeps failing.
+        if now - last_delivery_poll >= delivery_backoff_s:
+            last_delivery_poll = now
+            try:
+                _poll_bot_live_delivery_once(sid, session)
+                delivery_backoff_s = _DELIVERY_POLL_SECONDS
+            except Exception:
+                delivery_backoff_s = min(delivery_backoff_s * 2.0, _DELIVERY_POLL_BACKOFF_MAX_S)
+                logger.warning("Bot live-owner delivery poll failed", exc_info=True)
         # /loop and /heartbeat wakeup drivers: fire a due tick for THIS session while idle (same claim-under-lock
         # as kanban dispatch). An active non-parked /goal owns the idle boundary and defers the loop tick.
         if now - last_loop_poll >= _LOOP_POLL_SECONDS:

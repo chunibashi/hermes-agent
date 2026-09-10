@@ -1,5 +1,7 @@
 """Imported turns retain their receipt and cannot bypass the local FIFO."""
+import logging
 import threading
+from queue import Empty
 from types import SimpleNamespace
 
 from tui_gateway.method_ctx import rebind
@@ -87,3 +89,68 @@ def test_local_work_blocks_mailbox_claim_without_consuming_envelope(monkeypatch,
     assert submitted == ["imported"] and not pending
     assert receipts[0][0][1] == "receipt"
     assert receipts[0][1]["reply"] == "reply"
+
+
+def test_live_delivery_poll_is_throttled_and_backs_off_on_failure(monkeypatch):
+    """The mailbox poll takes the shared registry lock: the loop must NOT fire it every
+    0.5s tick (a slow holder turns that into an EDEADLK warning storm and steals the lock
+    from session lifecycle ops), a failing poll doubles the gap, and recovery resets it."""
+    from tools.process_registry import process_registry
+
+    schedule = [0.0, 2.0, 6.0, 14.0, 16.0, 30.0, 32.0]
+
+    class _Clock:
+        def __init__(self):
+            self.i = -1
+
+        def monotonic(self):
+            self.i += 1
+            return schedule[min(self.i, len(schedule) - 1)]
+
+    clock = _Clock()
+    polls: list = []
+    # fail at t=2/6/14 (backoff 2->4->8->16, so t=16 must be SKIPPED), succeed at t=30/32
+    outcomes = [None, None, None, False, False]
+
+    def _flaky_poll(sid, session):
+        polls.append(clock.i)
+        outcome = outcomes.pop(0)
+        if outcome is None:
+            raise OSError(36, "Resource deadlock avoided")
+        return False
+
+    class _FakeQueue:
+        def get(self, timeout=None):
+            raise Empty
+
+        def qsize(self):
+            return 0
+
+    class _StopAfter:
+        def __init__(self, limit):
+            self.limit = limit
+
+        def is_set(self):
+            return len(polls) >= self.limit
+
+    monkeypatch.setattr(session_notifications, "_poll_bot_live_delivery_once", _flaky_poll)
+    g = dict(session_notifications.__dict__)
+    g.update({
+        "time": clock,
+        # ``logger`` lives on the server module's globals after bind_module; the
+        # split module's own __dict__ never has it.
+        "logger": logging.getLogger("test_poller_throttle"),
+        "_maybe_fire_tui_loop_tick": lambda *a: None,
+        "_maybe_fire_tui_heartbeat_tick": lambda *a: None,
+        "_notif_poll_kanban": lambda *a: None,
+        "_notif_handle_ready": lambda *a, **k: None,
+    })
+    loop = rebind(session_notifications._notification_poller_loop, g)
+    monkeypatch.setattr(process_registry, "completion_queue", _FakeQueue(), raising=False)
+    loop(_StopAfter(5), "sid", {"history_lock": threading.RLock()})
+    # polls fired at loop ticks 1,2,3,5,6 (t=2,6,14,30,32) — never at tick 4 (t=16, mid-backoff)
+    # and never on the 0.5s queue ticks a hot loop would have burned on
+    assert polls == [1, 2, 3, 5, 6]
+    assert not outcomes  # success at t=30 reset the backoff, enabling the t=32 poll
+
+
