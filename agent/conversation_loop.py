@@ -1083,6 +1083,7 @@ def _arm_fallback_restart(agent, api_messages, active_system_prompt, _retry):
     active_system_prompt = _sync_failover_system_message(
         agent, api_messages, active_system_prompt)
     _retry.primary_recovery_attempted = False
+    _retry.rebuilt_by_fallback = True
     _retry.restart_with_rebuilt_messages = True
     return active_system_prompt
 

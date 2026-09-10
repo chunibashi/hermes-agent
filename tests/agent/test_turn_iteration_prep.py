@@ -36,6 +36,7 @@ def _agent():
     agent = SimpleNamespace(iteration_budget=budget, steered=[])
     agent._drain_pending_redirect = lambda: "last correction"
     agent.steer = agent.steered.append
+    agent._fallback_chain = []  # empty by default; tests that don't set rebuilt_by_fallback
     return agent
 
 
@@ -64,3 +65,28 @@ def test_restart_refunds_are_bounded_per_turn(flag):
     assert verdicts[-1]._turn_exit_reason.endswith("restart_limit_exceeded")
     # The correction that tripped the redirect cap is handed back as the next user turn.
     assert agent.steered == (["last correction"] if flag == "restart_with_redirected_messages" else [])
+
+
+def test_fallback_rebuilt_uses_chain_length_as_cap():
+    """A fallback-activated rebuilt restart should be bounded by the fallback chain
+    length, not the default ``max_retries`` of 3 — so a 5-entry chain can try all 5."""
+    agent = _agent()
+    agent._fallback_chain = [{}] * 5  # 5 fallback entries
+
+    restart_count, verdicts = 0, []
+    while len(verdicts) < 7 and (not verdicts or verdicts[-1].action != "break"):
+        _retry = TurnRetryState()
+        _retry.restart_with_rebuilt_messages = True
+        _retry.rebuilt_by_fallback = True
+        verdicts.append(apply_retry_restarts(
+            agent, _retry=_retry, response=None, interrupted=False, messages=[],
+            conversation_history=[], user_message="hi", api_kwargs={}, current_turn_user_idx=0,
+            final_response=None, retry_count=0, max_retries=MAX_RETRIES, api_call_count=1,
+            restart_count=restart_count, length_continue_retries=0,
+            _preflight_compression_blocked=True, _turn_exit_reason="unknown",
+        ))
+        restart_count = verdicts[-1].restart_count
+    # 5 continues (chain length) then break on the 6th
+    assert [v.action for v in verdicts] == ["continue"] * 5 + ["break"]
+    assert agent.iteration_budget.refunds == 5
+    assert verdicts[-1]._turn_exit_reason == "rebuilt_restart_limit_exceeded"

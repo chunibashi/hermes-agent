@@ -222,6 +222,7 @@ def _content_filter_fallback(st: _Trunc, _retry: TurnRetryState) -> Optional[Tru
         st.retry_count = 0
         st.compression_attempts = 0
         _retry.primary_recovery_attempted = False
+        _retry.rebuilt_by_fallback = True
         _retry.restart_with_rebuilt_messages = True
         return st.done("break")
     agent._vprint(
