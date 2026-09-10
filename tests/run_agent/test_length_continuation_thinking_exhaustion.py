@@ -243,6 +243,144 @@ class TestThinkingOnlyTruncation:
         assert "and the ending." in (result["final_response"] or "")
         assert _no_empty_assistant_rows(result["messages"]) == []
 
+class TestThinkingExhaustionFallsBack:
+    """Thinking-budget exhaustion now escalates to the fallback chain BEFORE
+    aborting: a lower-reasoning / non-reasoning fallback model may still answer
+    within its own output cap. Without a chain the original abort is preserved.
+    Repetition-dominated truncation stays a plain abort (it was never routed to
+    fallback and continuation cannot fix a degenerate loop)."""
+
+    def test_thinking_only_truncation_activates_fallback_first(self, loop_agent):
+        """One thinking-only truncation with a configured fallback chain: the
+        chain is consulted immediately (zero continuation retries burned) and
+        the fallback provider completes the turn."""
+        from tests.run_agent.test_run_agent import _mock_assistant_msg, _mock_response
+
+        def _thinking_only():
+            return SimpleNamespace(
+                id="chatcmpl-thinking-exhausted",
+                model="test/model",
+                choices=[SimpleNamespace(
+                    index=0,
+                    message=_mock_assistant_msg(
+                        content="<thinking>" + "x" * 500 + "</thinking>"
+                    ),
+                    finish_reason=FINISH_REASON_LENGTH,
+                )],
+                usage=None,
+            )
+
+        recovery = _mock_response(
+            content="Done on the fallback provider.", finish_reason="stop",
+        )
+        loop_agent.client.chat.completions.create.side_effect = [
+            _thinking_only(), recovery,
+        ]
+        loop_agent._fallback_chain = [
+            {"provider": "openrouter", "model": "anthropic/claude-sonnet-4.7"},
+        ]
+        loop_agent._fallback_index = 0
+        fb_calls = {"n": 0}
+
+        def _fake_activate(reason=None):
+            fb_calls["n"] += 1
+            loop_agent._fallback_index = len(loop_agent._fallback_chain)
+            return True
+
+        with (
+            patch.object(loop_agent, "_persist_session"),
+            patch.object(loop_agent, "_save_trajectory"),
+            patch.object(loop_agent, "_cleanup_task_resources"),
+            patch.object(loop_agent, "_try_activate_fallback",
+                         side_effect=_fake_activate),
+        ):
+            result = loop_agent.run_conversation("write me a long report")
+
+        assert fb_calls["n"] == 1, (
+            "Thinking-exhausted truncation must activate fallback exactly once, "
+            "on the first pass — not after exhausting continuation retries."
+        )
+        assert result["completed"] is True
+        assert result["final_response"] == "Done on the fallback provider."
+        assert _no_empty_assistant_rows(result["messages"]) == [], (
+            "The thinking-only fragment must never enter the transcript."
+        )
+
+    def test_thinking_only_truncation_aborts_without_fallback(self, loop_agent):
+        """No fallback chain configured: the thinking-exhausted abort is kept —
+        the user-facing reasoning notice still surfaces, no silent success."""
+        from tests.run_agent.test_run_agent import _mock_assistant_msg
+
+        loop_agent.client.chat.completions.create.side_effect = [
+            SimpleNamespace(
+                id="chatcmpl-thinking-exhausted",
+                model="test/model",
+                choices=[SimpleNamespace(
+                    index=0,
+                    message=_mock_assistant_msg(
+                        content="<thinking>" + "x" * 500 + "</thinking>"
+                    ),
+                    finish_reason=FINISH_REASON_LENGTH,
+                )],
+                usage=None,
+            ),
+        ]
+        # The loop_agent fixture builds no fallback chain (no fallback_model arg).
+        result = _run(loop_agent, "write me a long report")
+
+        assert result["completed"] is False
+        assert "reasoning" in (result.get("error") or "").lower(), (
+            "Without a fallback the turn must surface the reasoning-exhausted "
+            "error, not a generic truncation notice."
+        )
+        assert _no_empty_assistant_rows(result["messages"]) == []
+
+    def test_repetition_dominated_still_aborts_with_fallback_available(self, loop_agent):
+        """Repetition-dominated truncation is NOT routed to fallback even when a
+        chain exists — the degenerate loop is model behaviour that continuation
+        cannot fix, and the fallback budget is not spent on it."""
+        from tests.run_agent.test_run_agent import _mock_assistant_msg
+
+        loop_agent.client.chat.completions.create.side_effect = [
+            SimpleNamespace(
+                id="chatcmpl-repetition",
+                model="test/model",
+                choices=[SimpleNamespace(
+                    index=0,
+                    message=_mock_assistant_msg(
+                        content="<thinking>n/a</thinking>" + ("Repeat repeat repeat. " * 60)
+                    ),
+                    finish_reason=FINISH_REASON_LENGTH,
+                )],
+                usage=None,
+            ),
+        ]
+        loop_agent._fallback_chain = [
+            {"provider": "openrouter", "model": "anthropic/claude-sonnet-4.7"},
+        ]
+        loop_agent._fallback_index = 0
+        fb_calls = {"n": 0}
+
+        def _fake_activate(reason=None):
+            fb_calls["n"] += 1
+            return True
+
+        with (
+            patch.object(loop_agent, "_persist_session"),
+            patch.object(loop_agent, "_save_trajectory"),
+            patch.object(loop_agent, "_cleanup_task_resources"),
+            patch.object(loop_agent, "_try_activate_fallback",
+                         side_effect=_fake_activate),
+        ):
+            result = loop_agent.run_conversation("write me a long report")
+
+        assert fb_calls["n"] == 0, (
+            "Repetition-dominated truncation must not consume the fallback chain."
+        )
+        assert result["completed"] is False
+        assert "repetition" in (result.get("error") or "").lower()
+
+
 class TestReasoningOffReachesTheWire:
     def test_continuation_request_carries_reasoning_off_on_the_wire(self, loop_agent):
         """The flag is only useful if the continuation REQUEST goes out with

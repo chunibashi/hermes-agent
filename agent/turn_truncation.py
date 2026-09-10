@@ -192,21 +192,19 @@ def _abort_reason(agent: Any, content: Any, has_tool_calls: bool) -> Optional[tu
     return None
 
 
-def _content_filter_fallback(st: _Trunc, _retry: TurnRetryState) -> Optional[TruncationVerdict]:
-    """Content-filter stream stall → fallback. ``_content_filter_terminated`` is
-    content-deterministic, so escalate before retrying the primary; without a fallback
-    fall through to normal continuation (best-effort, may loop)."""
+def _escalate_to_fallback(
+    st: _Trunc, _retry: TurnRetryState, *,
+    reason_line: str, status_msg: str, no_fallback_line: str,
+) -> Optional[TruncationVerdict]:
+    """Shared truncation→fallback escalation: roll partial content back to the
+    last clean turn so the fallback gets a coherent continuation point, unmark
+    survivors, and return the ``break`` verdict. ``None`` when no fallback is
+    configured/activated (caller falls through to its own path)."""
     agent = st.agent
-    if not (
-        getattr(st.response, "_content_filter_terminated", False)
-        and agent._fallback_index < len(agent._fallback_chain)
-    ):
+    if not (agent._fallback_index < len(agent._fallback_chain)):
         return None
-    agent._vprint(
-        f"{agent.log_prefix}🛡️  Content filter terminated stream — activating fallback provider...",
-        force=True,
-    )
-    agent._emit_status("Content filter terminated stream; switching to fallback...")
+    agent._vprint(f"{agent.log_prefix}{reason_line}", force=True)
+    agent._emit_status(status_msg)
     if agent._try_activate_fallback():
         # Roll partial content back to the last clean turn so the fallback gets a
         # coherent continuation point; unmark survivors (their text left the partial).
@@ -225,12 +223,37 @@ def _content_filter_fallback(st: _Trunc, _retry: TurnRetryState) -> Optional[Tru
         _retry.rebuilt_by_fallback = True
         _retry.restart_with_rebuilt_messages = True
         return st.done("break")
-    agent._vprint(
-        f"{agent.log_prefix}⚠️  No fallback provider configured — retrying with same provider "
-        f"(may re-hit filter)...",
-        force=True,
-    )
+    agent._vprint(f"{agent.log_prefix}{no_fallback_line}", force=True)
     return None
+
+
+def _content_filter_fallback(st: _Trunc, _retry: TurnRetryState) -> Optional[TruncationVerdict]:
+    """Content-filter stream stall → fallback. ``_content_filter_terminated`` is
+    content-deterministic, so escalate before retrying the primary; without a fallback
+    fall through to normal continuation (best-effort, may loop)."""
+    if not getattr(st.response, "_content_filter_terminated", False):
+        return None
+    return _escalate_to_fallback(
+        st, _retry,
+        reason_line="🛡️  Content filter terminated stream — activating fallback provider...",
+        status_msg="Content filter terminated stream; switching to fallback...",
+        no_fallback_line="⚠️  No fallback provider configured — retrying with same provider "
+        "(may re-hit filter)...",
+    )
+
+
+def _thinking_exhausted_fallback(st: _Trunc, _retry: TurnRetryState) -> Optional[TruncationVerdict]:
+    """Reasoning burned the whole output budget → try the fallback chain before
+    aborting. A lower-reasoning / non-reasoning fallback model may still answer;
+    retrying the primary with thinking ON would just re-burn the budget. Without
+    a fallback, fall through to the caller's abort (continuation is pointless:
+    each attempt grows the prompt and re-burns thinking)."""
+    return _escalate_to_fallback(
+        st, _retry,
+        reason_line="💭  Reasoning exhausted the output budget — activating fallback provider...",
+        status_msg="Reasoning exhausted the output budget; switching to fallback...",
+        no_fallback_line="⚠️  No fallback provider configured — ending turn (reasoning budget exhausted)",
+    )
 
 
 def _continue_text(st: _Trunc, _retry: TurnRetryState, assistant_message: Any) -> TruncationVerdict:
@@ -413,6 +436,15 @@ def recover_from_truncation(
     abort = _abort_reason(agent, _trunc_content, _trunc_has_tool_calls)
     if abort is not None:
         line, user_response, error = abort
+        # Thinking exhaustion is model-behaviour, not a provider fault: retrying
+        # the primary with thinking ON re-burns the budget against a growing
+        # prompt. Escalate to the fallback chain BEFORE aborting — a
+        # lower-reasoning / non-reasoning fallback may still answer. Repetition
+        # stays a plain abort (continuation can't fix a degenerate loop).
+        if abort is _THINKING_EXHAUSTED:
+            escalated = _thinking_exhausted_fallback(st, _retry)
+            if escalated is not None:
+                return escalated
         agent._vprint(f"{agent.log_prefix}{line}", force=True)
         return st.end_turn(user_response, error)
 
