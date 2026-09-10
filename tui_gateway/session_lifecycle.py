@@ -5,6 +5,8 @@ globals at install time (method_ctx.bind_module), so they reference server.py gl
 
 from __future__ import annotations
 
+import logging
+
 import contextlib
 
 from .method_ctx import bind_module
@@ -212,6 +214,15 @@ def _sibling_claimed_during_window(session_id: str, session: dict) -> bool:
         logger.debug("post-end lease recheck failed for %s", session_id, exc_info=True)
         return True
     return any(str(entry.get("session_id") or "") == session_id for entry in entries)
+def _lock_vault_managers(session: dict) -> None:
+    """A per-session unlock ends with the session that made it; siblings in the same profile keep theirs."""
+    try:
+        from agent.vault_backends import unlock
+
+        if sid := session.get("_sid"):
+            unlock.release_session(sid)
+    except Exception:
+        logging.getLogger(__name__).debug("vault manager lock on session end failed", exc_info=True)
 
 
 def _finalize_session(session: dict | None, end_reason: str = "tui_close") -> None:
@@ -220,6 +231,7 @@ def _finalize_session(session: dict | None, end_reason: str = "tui_close") -> No
     if not session or session.get("_finalized"):
         return
     session["_finalized"] = True
+    _lock_vault_managers(session)
     if (history_ready := session.get("resume_history_ready")) is not None and not history_ready.is_set():
         session["resume_history_error"] = "session resume cancelled"
         history_ready.set()
@@ -504,18 +516,10 @@ def _reattach_refusal(rid, sid: str, session: dict) -> dict | None:
 
 
 def _rebind_live_transport(sid: str, session: dict, transport: Transport) -> None:
-    """Attach a live peer without displacing existing subscribers (caller holds ``history_lock``)."""
-    from tools.delegate_tool_registry import _active_subagents, _active_subagents_lock
-
-    # Transfer only this exact live generation's capabilities at the authenticated
-    # attachment seam, including records spawned through an older dispatch context.
-    with _active_subagents_lock:
-        _attach_session_transport(session, transport)
-        for record in _active_subagents.values():
-            if (record.get("owner_session_id") == sid
-                    and record.get("owner_session_record") is session
-                    and record.get("owner_transport") is not None):
-                record["owner_transport"] = session["transport"]
+    """Attach a live peer without displacing existing subscribers (caller holds ``history_lock``).
+    Subagent control authority needs no bookkeeping here: it resolves against ``session["transport"]``
+    at RPC time (``tools.delegate_tool_registry._subagent_transport_matches``)."""
+    _attach_session_transport(session, transport)
     # Every transport that showed this session (pop-outs resume the same sid); on disconnect the last
     # viewer becomes the transport instead of the drop sentinel.
     session.setdefault("viewers", {})[transport] = time.time()

@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from 'react'
 
 import { getLocalModelsStatus } from '@/hermes'
 import { useI18n } from '@/i18n'
-import { modelOptionsQueryKey, requestModelOptions } from '@/lib/model-options'
+import { catalogProviderMatches, modelOptionsQueryKey, requestModelOptions } from '@/lib/model-options'
 import { modelSearchText } from '@/lib/model-search-text'
 import { currentPickerSelection } from '@/lib/model-status-label'
 import { foldIncludes, normalize } from '@/lib/text'
@@ -392,7 +392,7 @@ function ModelResults({
               </div>
             )}
             {models.map(model => {
-              const isCurrent = model === currentModel && provider.slug === currentProvider
+              const isCurrent = model === currentModel && catalogProviderMatches(provider, currentProvider)
               const price = provider.pricing?.[model]
               const locked = unavailable.has(model)
               const faved = isFavorite(favorites, provider.slug, model)
