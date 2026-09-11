@@ -17,9 +17,7 @@ function mountStream() {
 const start = () => act(() => stream.handleEvent({ payload: {}, session_id: SID, type: 'message.start' }))
 
 const reasoning = (text: string) =>
-  act(() =>
-    stream.handleEvent({ payload: { text }, session_id: SID, type: 'reasoning.available' })
-  )
+  act(() => stream.handleEvent({ payload: { text }, session_id: SID, type: 'reasoning.available' }))
 
 const delta = (text: string) =>
   act(() => stream.handleEvent({ payload: { text }, session_id: SID, type: 'message.delta' }))

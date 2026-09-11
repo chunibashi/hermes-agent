@@ -86,9 +86,7 @@ const reconcileToolPart = (stored: ChatMessagePart, local: ChatMessagePart): Cha
     timestamp: earliestBoundary(stored.timestamp, local.timestamp),
     // The part union declares `result` read-only; this cast is confined to the
     // tool-call member where the field actually exists.
-    ...(partCarriesToolData(stored) || !partCarriesToolData(local)
-      ? {}
-      : { result: local.result as never })
+    ...(partCarriesToolData(stored) || !partCarriesToolData(local) ? {} : { result: local.result as never })
   }
 
   return merged as ChatMessagePart
