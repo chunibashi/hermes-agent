@@ -13,36 +13,37 @@ import * as jsxRuntime from 'react/jsx-runtime'
 
 import * as sdk from './index'
 
-// Lazy getters, NOT eager object literal: rolldown can reorder module
-// initializers inside a shared chunk, so an eager `__HERMES_PLUGIN_SDK__: sdk`
-// could capture the namespace binding before `./index` runs its own
-// initializer (observed: `var Tg={...:Hb}` emitted before `var Hb=t({...})`,
-// leaving Tg.__HERMES_PLUGIN_SDK__ undefined → Object.keys(undefined) threw
-// on every disk-plugin load). Getters resolve at ACCESS time, by which point
-// all module initializers have run.
-const GLOBALS = {
-  get __HERMES_PLUGIN_SDK__() {
-    return sdk
-  },
-  get __HERMES_REACT__() {
-    return React
-  },
-  get __HERMES_REACT_JSX__() {
-    return jsxRuntime
-  },
-  get __HERMES_REACT_JSX_DEV__() {
-    return jsxDevRuntime
+// Resolved LAZILY, never as a module-scope literal. This module sits in an
+// import cycle — `sdk/index` → `contrib/*` → `contrib/runtime-loader` →
+// `sdk/runtime` — so a module-scope `{ __HERMES_PLUGIN_SDK__: sdk, … }` is
+// evaluated BEFORE `sdk/index`'s own body runs. In the bundled app that read
+// yields `undefined` (the bundler emits the namespace as a hoisted `var`), so
+// `Object.keys(GLOBALS.__HERMES_PLUGIN_SDK__)` threw
+// "Cannot convert undefined or null to object" and EVERY runtime (disk)
+// plugin failed to load. Reading them at call time — installPluginSdk() and
+// the shim builder only ever run once the app is up — gets the live
+// namespaces.
+function pluginNamespaces() {
+  return {
+    __HERMES_PLUGIN_SDK__: sdk,
+    __HERMES_REACT__: React,
+    __HERMES_REACT_JSX__: jsxRuntime,
+    __HERMES_REACT_JSX_DEV__: jsxDevRuntime
   }
-} as const
+}
+
+type PluginGlobalKey = keyof ReturnType<typeof pluginNamespaces>
 
 export function installPluginSdk(): void {
-  Object.assign(globalThis, GLOBALS)
+  Object.assign(globalThis, pluginNamespaces())
 }
 
 /** Build a shim ESM blob that re-exports a global namespace's live members.
  *  Export names come from the namespace itself, so the list can't drift. */
-function shimUrl(globalKey: keyof typeof GLOBALS): string {
-  const names = Object.keys(GLOBALS[globalKey]).filter(name => name !== 'default' && /^[A-Za-z_$][\w$]*$/.test(name))
+function shimUrl(globalKey: PluginGlobalKey): string {
+  const names = Object.keys(pluginNamespaces()[globalKey]).filter(
+    name => name !== 'default' && /^[A-Za-z_$][\w$]*$/.test(name)
+  )
 
   const source =
     `const m = globalThis.${globalKey};\n` +
