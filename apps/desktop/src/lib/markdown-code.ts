@@ -7,6 +7,7 @@ const COMMON_CODE_LANGUAGES = new Set([
   'bash',
   'c',
   'cpp',
+  'csv',
   'css',
   'diff',
   'go',
@@ -27,6 +28,7 @@ const COMMON_CODE_LANGUAGES = new Set([
   'sh',
   'sql',
   'swift',
+  'tsv',
   'tsx',
   'ts',
   'typescript',
@@ -241,11 +243,20 @@ export function shikiLanguageForFilename(path: string | undefined): string {
   return SHIKI_LANGUAGE_BY_EXTENSION[filenameExtToken(path)] || ''
 }
 
+// A tab-separated data row (Getchu 12-col character tables etc.) is structured
+// data no matter what script it starts with — tab characters never appear in
+// wrapped prose, so their presence vetoes the prose line count.
+const TSV_LINE_RE = /\t/
+
 function proseLineCount(body: string): number {
   return body.split('\n').filter(line => {
     const trimmed = line.trim()
 
-    return Boolean(trimmed) && /^[A-Za-z0-9"'`*-]/.test(trimmed)
+    if (!trimmed || TSV_LINE_RE.test(trimmed)) {
+      return false
+    }
+
+    return /^[A-Za-z0-9"'`*-]/.test(trimmed)
   }).length
 }
 

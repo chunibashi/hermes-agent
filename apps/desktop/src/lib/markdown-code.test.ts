@@ -21,6 +21,37 @@ describe('isLikelyProseCodeBlock', () => {
     expect(isLikelyProseCodeBlock('ts', 'const value = { bunny: true };\nreturn value')).toBe(false)
   })
 
+  it('keeps a ```tsv data block fenced (Getchu 12-col rows, ASCII-title regression)', () => {
+    const rows = [
+      'Relirium 光我做主！\t奈々瀬 ひな\tNanase Hina\t\t18\t4/2\tA\t150\t45\t78\t56\t80',
+      'Relirium 光我做主！\t星野 みはる\tHoshino Miharu\t\t22\t7/7\tO\t161\t52\t92\t60\t92'
+    ].join('\n')
+
+    expect(isLikelyProseCodeBlock('tsv', rows)).toBe(false)
+  })
+
+  it('keeps an unlabeled TSV block fenced (tab rows are structured data)', () => {
+    const rows = [
+      '完堕ちX兄嫁 -アンタのせいよ！\t佐伯 千歳\tSaeki Chitose\t\t26\t\tA\t158\t48\t85\t58\t86',
+      '完堕ちX兄嫁 -アンタのせいよ！\t神谷 詩織\tKamiya Shiori\t高1\t\t5/5\tO\t152\t44\t76\t54\t78'
+    ].join('\n')
+
+    expect(isLikelyProseCodeBlock('', rows)).toBe(false)
+  })
+
+  it('still unwraps English prose that an ASCII/numeric line would once have fenced', () => {
+    expect(
+      isLikelyProseCodeBlock(
+        '',
+        [
+          '200 players joined the event yesterday.',
+          'Everyone seems to agree the bunny must go.',
+          'The next round starts very soon after this.'
+        ].join('\n')
+      )
+    ).toBe(true)
+  })
+
   it('keeps an SSH config block fenced (regression: rendered as flat prose)', () => {
     const ssh = ['Host 192.168.0.159', '    HostName 192.168.0.159', '    User teknium', '    Port 22'].join('\n')
 
