@@ -1219,7 +1219,11 @@ def extract_reasoning(agent, assistant_message) -> Optional[str]:
         from agent.message_content import flatten_message_text
 
         text = flatten_message_text(text, sep="")
-        if text and text not in parts:
+        # Whitespace-only placeholders (DeepSeek/Kimi single-space sentinel)
+        # must not count as reasoning — they short-circuit the fallback that
+        # extracts inline thinking from `` tags in content, silently
+        # dropping the real thought and losing the disclosure on hydrate.
+        if text and text.strip() and text not in parts:
             parts.append(text)
     _add(getattr(assistant_message, "reasoning", None))
     _add(getattr(assistant_message, "reasoning_content", None))
