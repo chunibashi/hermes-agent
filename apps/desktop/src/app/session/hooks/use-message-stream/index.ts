@@ -789,6 +789,7 @@ export function useMessageStream({
         // visible assistant text and the terminal frame is empty. In that
         // case hydrate would replace the live bubble with a stored empty
         // row (#95514; adoptedRunningTurn must not short-circuit).
+        const hadAuthoritativePayload = state.sawAssistantPayload || Boolean(finalText)
         shouldHydrate =
           !completionError &&
           !hasInlineError &&
@@ -800,7 +801,7 @@ export function useMessageStream({
           // locally, so the user-tail guard keeps applying there.
           (!unresolvedUserTail || !finalText) &&
           !(localVisibleText && !finalText) &&
-          (state.adoptedRunningTurn || !state.sawAssistantPayload || !finalText)
+          (state.adoptedRunningTurn || !hadAuthoritativePayload || !finalText)
 
         return {
           ...state,
