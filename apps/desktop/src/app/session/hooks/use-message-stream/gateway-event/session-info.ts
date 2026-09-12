@@ -333,7 +333,7 @@ export function handleSessionInfoEvent(ctx: GatewayEventContext): boolean {
           // gate forever. busy then latches until app restart:
           // isTargetSessionBusy refuses every send, the composer queues
           // each message, and the queue drain (gated on busy→false) never
-          // fires. turnStartedAt is seeded at the optimistic arm, so its
+          // turnStartedAt is seeded at the optimistic arm, so its
           // age bounds the hold; past the grace window (or with no clock
           // at all) the gateway's running=false is authoritative and the
           // settle below releases the session.
@@ -354,7 +354,16 @@ export function handleSessionInfoEvent(ctx: GatewayEventContext): boolean {
           // per-session busy flag is authoritative for isTargetSessionBusy,
           // so submitPrompt and the slash dispatcher silently returned false
           // and the session accepted no further input.
-          recoveredIncompleteTurn = state.turnLive
+          //
+          // Don't treat as a recovery event when the turn is still actively
+          // streaming — message.complete is the canonical settle signal and
+          // will arrive to finalize the message. A premature recovery here
+          // rehydrates from stored history (which lacks thinking content
+          // relayed only via reasoning.available), replacing the live
+          // stream just as the user reads it and dropping the first block's
+          // measured label. Let message.complete settle normally.
+          const stillStreaming = Boolean(state.streamId) && state.sawAssistantPayload
+          recoveredIncompleteTurn = state.turnLive && !stillStreaming
 
           return {
             ...state,
