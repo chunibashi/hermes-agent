@@ -10,6 +10,7 @@ const inlineDiffCache = new Map<string, ReadableAtom<string>>()
 
 export function recordToolDiff(toolCallId: string, diff: string) {
   if (!toolCallId || !diff) {
+    console.log("[tool-diffs] recordToolDiff skipped: empty id or diff", { toolCallId, diffLen: diff?.length })
     return
   }
 
@@ -19,7 +20,12 @@ export function recordToolDiff(toolCallId: string, diff: string) {
     return
   }
 
+  console.log("[tool-diffs] recordToolDiff storing", { toolCallId, diffLen: diff.length, currentKeys: Object.keys(current) })
   $toolDiffs.set({ ...current, [toolCallId]: diff })
+}
+
+export function logToolDiffState() {
+  console.log("[tool-diffs] current $toolDiffs keys:", Object.keys($toolDiffs.get()))
 }
 
 export function getToolDiff(toolCallId: string): string {
