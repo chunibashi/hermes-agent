@@ -2933,6 +2933,26 @@ class _StreamingCall(StreamingWaitMonitor):
         args or stamping "stop"."""
         full_content = "".join(content_parts) or None
         full_reasoning = "".join(reasoning_parts) or None
+        # Inline `` tags embedded in content (single-channel providers like
+        # DeepSeek relay the thinking through delta.content instead of
+        # delta.reasoning_content). Extract them and promote to reasoning so
+        # hydrate rebuilds the disclosure with its measured duration; otherwise
+        # the thinking was streamed to the UI but never persisted, and hydrate
+        # drops the "思考了片刻" row on the next mount.
+        if isinstance(full_content, str) and full_content:
+            from agent.agent_runtime_helpers import _INLINE_REASONING_PATTERNS
+            inline_thinking: list[str] = []
+            remaining = full_content
+            for pattern in _INLINE_REASONING_PATTERNS:
+                for block in pattern.findall(remaining):
+                    stripped = block.strip()
+                    if stripped and stripped not in inline_thinking:
+                        inline_thinking.append(stripped)
+                remaining = pattern.sub("", remaining)
+            if inline_thinking:
+                extracted = "\n\n".join(inline_thinking)
+                full_reasoning = (full_reasoning + "\n\n" + extracted) if full_reasoning else extracted
+                full_content = remaining.strip() or None
         mock_tool_calls, has_truncated_tool_args = self._assemble_tool_calls(tool_calls_acc, finish_reason)
         # Zero-chunk guard: nothing usable = upstream error / malformed SSE.
         if finish_reason is None and not content_parts and not reasoning_parts and not tool_calls_acc:
