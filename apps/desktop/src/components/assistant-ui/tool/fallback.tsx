@@ -375,6 +375,9 @@ function ToolEntry({ part }: ToolEntryProps) {
   // re-render every mounted tool row (the factory caches a per-id atom).
   const sideDiff = useStore($toolInlineDiff(toolCallId ?? ''))
   const inlineDiff = stripInlineDiffChrome(sideDiff) || inlineDiffFromResult(result)
+  if (toolName === 'skill_manage') {
+    console.log('[skill_manage-debug] render', { toolCallId, sideDiffLen: sideDiff?.length, inlineDiffLen: inlineDiff?.length, resultHasInlineDiff: typeof result === 'object' && result !== null && 'inline_diff' in result })
+  }
   const isFileEdit = isFileEditTool(toolName)
   const defaultOpen = Boolean(inlineDiff)
   const open = useDisclosureOpen(disclosureId, defaultOpen)
