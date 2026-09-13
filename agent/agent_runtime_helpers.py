@@ -1205,7 +1205,13 @@ _TRANSIENT_TRANSPORT_ERRORS = frozenset({
     "APIConnectionError", "APITimeoutError",
 })
 _INLINE_REASONING_PATTERNS = tuple(
-    re.compile(rf"<{tag}>(.*?)</{tag}>", re.DOTALL | re.IGNORECASE)
+    # Match content between the tag pair, OR from the open tag to the end of
+    # the string when the relay/model never closed it (DeepSeek relays send
+    # tool-call turns with an UNCLOSED ` thinking` block — the model moves on
+    # to emit tool_calls, so the closing tag never arrives). Without the
+    # `|\Z` fallback the unclosed block matched nothing, the thinking was
+    # dropped from reasoning, and hydrate lost the "思考了片刻" disclosure.
+    re.compile(rf"<{tag}>(.*?)(?:</{tag}>|\Z)", re.DOTALL | re.IGNORECASE)
     for tag in ("think", "thinking", "thought", "reasoning", "REASONING_SCRATCHPAD")
 )
 
