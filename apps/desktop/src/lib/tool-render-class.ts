@@ -28,10 +28,13 @@ export function isFileEditTool(toolName: string): boolean {
 //     they asked for, the several agents a fan-out is running.
 //   - `setup_mcp` and `manage_connections` are inline consent cards the user has to
 //     act on. Folding it into a "Using 2 tools" summary hides the buttons.
+//   - `skill_manage` mutates the user's skills and the gateway renders the
+//     change as an inline diff (agent/display.py treats it like a file edit),
+//     so the edit is a deliverable the user reviews, not scaffolding.
 //
 // Everything else is ephemeral activity — reads, searches, commands — which is
 // what a run summarizes and what the live ticker cycles through.
-const CARD_TOOL_NAMES = new Set(['clarify', 'delegate_task', 'image_generate', 'setup_mcp'])
+const CARD_TOOL_NAMES = new Set(['clarify', 'delegate_task', 'image_generate', 'setup_mcp', 'skill_manage'])
 
 export function isCardTool(toolName: string): boolean {
   return (

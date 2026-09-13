@@ -8,8 +8,9 @@ describe('isCardTool', () => {
   it('keeps what the user has to look at out of a summary', () => {
     // A diff is the deliverable, a clarify is a question waiting on an answer,
     // an image is the thing that was asked for. None of them survives being
-    // folded into "used 3 tools".
-    for (const toolName of ['clarify', 'image_generate', 'edit_file', 'patch', 'write_file']) {
+    // folded into "used 3 tools". skill_manage mutates the user's skills with
+    // an inline diff the gateway renders, so it stays a card too.
+    for (const toolName of ['clarify', 'image_generate', 'edit_file', 'patch', 'write_file', 'skill_manage']) {
       expect(isCardTool(toolName)).toBe(true)
     }
   })
