@@ -230,6 +230,7 @@ def _emit_tool_lifecycle(event, sid, name, args, payload):
 
 
 def _on_tool_start(sid: str, tool_call_id: str, name: str, args: dict):
+    logger.warning("DEBUG _on_tool_start fired for %s:%s args_keys=%s", name, tool_call_id, list(args.keys()) if isinstance(args, dict) else type(args))
     if _connector_lifecycle_is_stale(sid, name, args):
         return
     session = _sessions.get(sid)
