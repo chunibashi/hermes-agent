@@ -2887,7 +2887,10 @@ class _StreamingCall(StreamingWaitMonitor):
             self.agent.model or "unknown")
         self.agent._disable_streaming = True
         choices = final_response.choices
-        message = getattr(choices[0] if isinstance(choices, (list, tuple)) and choices else None, "message", None)
+        choice = choices[0] if isinstance(choices, (list, tuple)) and choices else None
+        message = getattr(choice, "message", None) if choice is not None else None
+        if message is None and isinstance(choice, dict):
+            message = choice.get("message")
         if message is not None:
             reasoning_text = getattr(message, "reasoning_content", None) or getattr(message, "reasoning", None)
             if isinstance(reasoning_text, str) and reasoning_text:
@@ -2896,6 +2899,29 @@ class _StreamingCall(StreamingWaitMonitor):
             if isinstance(content, str) and content:
                 self._fire_first_delta()
                 self.agent._fire_stream_delta(content)  # not _emit_text: deltas_were_sent stays False here
+        # Inline `` tags in content (single-channel providers like DeepSeek
+        # relay thinking through delta.content). Promote to reasoning_content
+        # so persistence keeps the thinking and hydrate rebuilds the
+        # "思考了片刻" disclosure; otherwise the thinking was streamed live
+        # but never persisted, and the row vanishes on next mount.
+        if isinstance(message, dict):
+            raw_content = message.get("content")
+            raw_reasoning = message.get("reasoning_content")
+            if isinstance(raw_content, str) and raw_content and (
+                not isinstance(raw_reasoning, str) or not raw_reasoning.strip()
+            ):
+                from agent.agent_runtime_helpers import _INLINE_REASONING_PATTERNS
+                inline_thinking: list[str] = []
+                remaining = raw_content
+                for pattern in _INLINE_REASONING_PATTERNS:
+                    for block in pattern.findall(remaining):
+                        stripped = block.strip()
+                        if stripped and stripped not in inline_thinking:
+                            inline_thinking.append(stripped)
+                    remaining = pattern.sub("", remaining)
+                if inline_thinking:
+                    message["reasoning_content"] = "\n\n".join(inline_thinking)
+                    message["content"] = remaining.strip() or None
         return final_response
 
     @staticmethod
