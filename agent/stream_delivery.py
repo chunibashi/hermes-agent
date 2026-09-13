@@ -68,8 +68,11 @@ class StreamDeliveryMixin:
         # erased the first delta, so the CLI/gateway state machine never saw the open tag and leaked the
         # reasoning content as regular response text).
         if think_scrubber is not None:
-            think_tail = think_scrubber.flush()
-            deliver(ctx_scrubber.feed(think_tail) if think_tail and ctx_scrubber is not None else think_tail)
+            think_tail, think_thinking = think_scrubber.flush()
+            if think_thinking:
+                self._fire_reasoning_delta(think_thinking)
+            if think_tail:
+                deliver(ctx_scrubber.feed(think_tail) if ctx_scrubber is not None else think_tail)
         if ctx_scrubber is not None:
             deliver(ctx_scrubber.flush())
         self._current_streamed_assistant_text = ""
@@ -302,7 +305,12 @@ class StreamDeliveryMixin:
             think_scrubber = getattr(self, "_stream_think_scrubber", None)
             # See #5719.
             scrubber = getattr(self, "_stream_context_scrubber", None)
-            text = think_scrubber.feed(text) if think_scrubber is not None else self._strip_think_blocks(text)
+            if think_scrubber is not None:
+                text, thinking = think_scrubber.feed(text)
+                if thinking:
+                    self._fire_reasoning_delta(thinking)
+            else:
+                text = self._strip_think_blocks(text)
             text = scrubber.feed(text) if scrubber is not None else sanitize_context(text)
             # Only strip leading newlines on the first delta — mid-stream "\n" is legitimate markdown.
             # Check the parts list, not the joined property (joining per token copies the whole reply).

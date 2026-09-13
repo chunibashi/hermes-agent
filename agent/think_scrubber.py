@@ -52,32 +52,51 @@ class StreamingThinkScrubber:
             out.append(text)
             self._last_emitted_ended_newline = text.endswith("\n")
 
-    def feed(self, text: str) -> str:
-        """Feed one delta; return the scrubbed visible portion ("" when it is all reasoning or held back)."""
+    def feed(self, text: str) -> tuple[str, str]:
+        """Feed one delta; return (scrubbed_visible, thinking_text).
+
+        ``scrubbed_visible`` is the visible prose with thinking blocks removed
+        (what the existing callers already consume). ``thinking_text`` is the
+        extracted thinking content from this delta, emitted to the reasoning
+        channel so the UI can render a live "Thinking" disclosure while the
+        model is still generating. Both strings preserve input order so the
+        caller can interleave them to reconstruct the original text."""
         if not text:
-            return ""
+            return "", ""
         buf = self._buf + text
         self._buf = ""
         out: list[str] = []
+        thinking: list[str] = []
 
         while buf:
             if self._in_block:
                 close_idx, close_len = self._find_first_tag(buf, self._CLOSE_TAGS)
                 if close_idx == -1:
-                    # No close yet: hold back a possible partial close-tag prefix, drop the rest.
+                    # No close yet: hold back a possible partial close-tag
+                    # prefix, the rest is thinking content for this delta.
+                    held = self._max_partial_suffix(buf, self._CLOSE_TAGS)
+                    thinking_part = buf[:-held] if held else buf
+                    if thinking_part:
+                        thinking.append(thinking_part)
                     self._hold_partial(buf, self._CLOSE_TAGS)
                     break
+                # Found close tag: everything before it is thinking.
+                thinking.append(buf[:close_idx])
                 buf = buf[close_idx + close_len:]
                 self._in_block = False
                 continue
 
-            # Priority 1: closed <tag>X</tag> pair anywhere (even inline pairs are almost
-            # certainly leaked reasoning). Priority 2: unterminated open tag at a block
-            # boundary (gated so prose mentioning '<think>' isn't over-stripped). Earliest wins.
+            # Priority 1: closed <tag>X</tag> pair anywhere (even inline pairs
+            # are almost certainly leaked reasoning). Priority 2: unterminated
+            # open tag at a block boundary (gated so prose mentioning
+            # '<think>' isn't over-stripped). Earliest wins.
             pair = self._find_earliest_closed_pair(buf)
             open_idx, open_len = self._find_open_at_boundary(buf, out)
             if pair is not None and (open_idx == -1 or pair[0] <= open_idx):
                 self._emit(out, buf[:pair[0]])
+                # Extract thinking from the closed pair.
+                open_tag_len = self._open_tag_len_at(buf, pair[0])
+                thinking.append(buf[pair[0] + open_tag_len:pair[1] - self._close_tag_len_at(buf, pair[1])])
                 buf = buf[pair[1]:]
                 continue
             if open_idx != -1:
@@ -91,7 +110,7 @@ class StreamingThinkScrubber:
             self._emit(out, self._hold_partial(buf, self._ALL_TAGS))
             break
 
-        return "".join(out)
+        return "".join(out), "".join(thinking)
 
     def _hold_partial(self, buf: str, tags: Tuple[str, ...]) -> str:
         """Move a trailing partial-tag prefix of *buf* into ``_buf``; return the remainder."""
@@ -99,16 +118,28 @@ class StreamingThinkScrubber:
         self._buf = buf[-held:] if held else ""
         return buf[:-held] if held else buf
 
-    def flush(self) -> str:
-        """End-of-stream flush: inside an unterminated block the held-back content is discarded (leaking
-        partial reasoning is worse than a truncated answer), otherwise the tail is emitted verbatim.
-        Always resets the boundary flag — intra-turn retries flush then stream again without ``reset()``,
-        and a stale False flag made the new stream's opening ``<think>`` look mid-line."""
-        tail = "" if self._in_block else self._buf
+    def flush(self) -> tuple[str, str]:
+        """End-of-stream flush. Returns (visible_tail, thinking_tail).
+
+        If inside an unterminated block (``_in_block`` True, no closing tag
+        arrived), the held-back content is returned as thinking rather than
+        discarded — the model moved on to non-thinking output (e.g. tool
+        calls), so the block is logically complete. Otherwise the tail is
+        emitted verbatim with orphan close tags stripped. Always resets the
+        boundary flag — intra-turn retries flush then stream again without
+        ``reset()``, and a stale False flag made the new stream's opening
+        ``<think>`` look mid-line."""
+        if self._in_block:
+            thinking_tail = self._buf
+            self._buf = ""
+            self._in_block = False
+            self._last_emitted_ended_newline = True
+            return "", thinking_tail
+        tail = self._buf
         self._buf = ""
         self._in_block = False
         self._last_emitted_ended_newline = True
-        return self._strip_orphan_close_tags(tail) if tail else ""
+        return (self._strip_orphan_close_tags(tail) if tail else ""), ""
 
     # ── internal helpers ───────────────────────────────────────────────
 
@@ -161,6 +192,24 @@ class StreamingThinkScrubber:
             suffix = buf_lower[-i:]
             if any(len(tag) > i and tag.startswith(suffix) for tag in tags):
                 return i
+        return 0
+
+    @classmethod
+    def _open_tag_len_at(cls, buf: str, idx: int) -> int:
+        """Return the length of the open tag at *idx* (case-insensitive)."""
+        buf_lower = buf[idx:].lower()
+        for tag in cls._OPEN_TAGS:
+            if buf_lower.startswith(tag):
+                return len(tag)
+        return 0
+
+    @classmethod
+    def _close_tag_len_at(cls, buf: str, end_idx: int) -> int:
+        """Return the length of the close tag that ends at *end_idx* (case-insensitive)."""
+        buf_lower = buf[:end_idx].lower()
+        for tag in cls._CLOSE_TAGS:
+            if buf_lower.endswith(tag):
+                return len(tag)
         return 0
 
     @classmethod
