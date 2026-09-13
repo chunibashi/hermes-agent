@@ -225,6 +225,36 @@ class TestEditDiffPreview:
         assert "-old" in diff
         assert "+new" in diff
 
+    def test_resolve_skill_manage_paths_handles_operations_array(self, tmp_path, monkeypatch):
+        """The advertised call shape is an ``operations`` array — the path
+        resolver must flatten it, not return [] and silently drop the
+        before-snapshot (which would leave the UI with no inline diff)."""
+        import tools.skill_manager_tool as _skm
+        from agent.display import _resolve_skill_manage_paths
+
+        fake_dir = tmp_path / "skills" / "debug" / "probe"
+        fake_dir.mkdir(parents=True)
+        monkeypatch.setattr(
+            _skm,
+            "_resolve_skill_dir",
+            lambda name, category=None: tmp_path / "skills" / (category or "") / name,
+        )
+        monkeypatch.setattr(
+            _skm,
+            "_find_skill",
+            lambda name: {"path": str(fake_dir)},
+        )
+
+        batch = {"operations": [{"action": "create", "name": "probe", "category": "debug"}]}
+        paths = _resolve_skill_manage_paths(batch)
+
+        assert len(paths) == 1
+        assert paths[0] == tmp_path / "skills" / "debug" / "probe" / "SKILL.md"
+
+        # Legacy flat form still works.
+        flat = {"action": "create", "name": "probe", "category": "debug"}
+        assert _resolve_skill_manage_paths(flat) == paths
+
 
 
     def test_render_edit_diff_with_delta_handles_renderer_errors(self, monkeypatch):

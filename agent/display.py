@@ -570,25 +570,48 @@ def _display_diff_path(path: Path) -> str:
 
 
 def _resolve_skill_manage_paths(args: dict) -> list[Path]:
-    """Resolve skill_manage write targets to filesystem paths."""
-    action = args.get("action")
-    name = args.get("name")
-    if not action or not name:
+    """Resolve skill_manage write targets to filesystem paths.
+
+    The advertised call shape is an ``operations`` array; the legacy flat
+    top-level action/name form is still accepted (old transcripts, staged-write
+    replay). Either way, every op that lands on a file contributes its
+    target(s), so the before-snapshot covers the whole batch.
+    """
+    ops = args.get("operations")
+    if isinstance(ops, list):
+        flat = [op for op in ops if isinstance(op, dict) and op.get("action") and op.get("name")]
+    else:
+        flat = [args] if args.get("action") and args.get("name") else []
+    if not flat:
         return []
     from tools.skill_manager_tool import _find_skill, _resolve_skill_dir
 
-    if action == "create":
-        return [_resolve_skill_dir(name, args.get("category")) / "SKILL.md"]
-    existing = _find_skill(name)
-    if not existing:
-        return []
-    skill_dir = Path(existing["path"])
-    file_path = args.get("file_path")
-    if action == "delete":
-        return [path for path in sorted(skill_dir.rglob("*")) if path.is_file()]
-    if file_path and action in {"edit", "patch", "write_file", "remove_file"}:
-        return [skill_dir / file_path]
-    return [skill_dir / "SKILL.md"] if action in {"edit", "patch"} else []
+    paths: list[Path] = []
+    seen: set[Path] = set()
+    for op in flat:
+        action = op["action"]
+        name = op["name"]
+        if action == "create":
+            targets = [_resolve_skill_dir(name, op.get("category")) / "SKILL.md"]
+        else:
+            existing = _find_skill(name)
+            if not existing:
+                continue
+            skill_dir = Path(existing["path"])
+            file_path = op.get("file_path")
+            if action == "delete":
+                targets = [p for p in sorted(skill_dir.rglob("*")) if p.is_file()]
+            elif file_path and action in {"edit", "patch", "write_file", "remove_file"}:
+                targets = [skill_dir / file_path]
+            elif action in {"edit", "patch"}:
+                targets = [skill_dir / "SKILL.md"]
+            else:
+                continue
+        for target in targets:
+            if target not in seen:
+                seen.add(target)
+                paths.append(target)
+    return paths
 
 
 def _resolve_local_edit_paths(tool_name: str, function_args: dict | None) -> list[Path]:
