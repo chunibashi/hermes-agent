@@ -2886,12 +2886,16 @@ class _StreamingCall(StreamingWaitMonitor):
             "switching %s/%s to non-streaming for this session.", self.agent.provider or "unknown",
             self.agent.model or "unknown")
         self.agent._disable_streaming = True
+        import logging
+        logging.warning(f"[THINK-DEBUG] _adopt_final_response called: final_response type={type(final_response).__name__}")
         choices = final_response.choices
         choice = choices[0] if isinstance(choices, (list, tuple)) and choices else None
         message = getattr(choice, "message", None) if choice is not None else None
         if message is None and isinstance(choice, dict):
             message = choice.get("message")
+            logging.warning(f"[THINK-DEBUG] _adopt_final_response: dict path, message type={type(message).__name__}")
         if message is not None:
+            logging.warning(f"[THINK-DEBUG] _adopt_final_response: message.content={repr(getattr(message, 'content', None))[:100]}")
             reasoning_text = getattr(message, "reasoning_content", None) or getattr(message, "reasoning", None)
             if isinstance(reasoning_text, str) and reasoning_text:
                 self._emit_reasoning(reasoning_text)
@@ -2959,6 +2963,8 @@ class _StreamingCall(StreamingWaitMonitor):
         args or stamping "stop"."""
         full_content = "".join(content_parts) or None
         full_reasoning = "".join(reasoning_parts) or None
+        import logging
+        logging.warning(f"[THINK-DEBUG] _finish_chat_stream: full_content={full_content!r} full_reasoning={full_reasoning!r} n_content={len(content_parts)} n_reason={len(reasoning_parts)}")
         # Inline `` tags embedded in content (single-channel providers like
         # DeepSeek relay the thinking through delta.content instead of
         # delta.reasoning_content). Extract them and promote to reasoning so
