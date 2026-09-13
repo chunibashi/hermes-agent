@@ -44,6 +44,7 @@ class StreamingThinkScrubber:
         self._in_block: bool = False
         self._buf: str = ""
         self._last_emitted_ended_newline: bool = True
+        self._thinking_buf: list[str] = []
 
     def _emit(self, out: list[str], text: str) -> None:
         """Append visible prose to *out* (orphan close tags stripped) and track the newline flag."""
@@ -57,10 +58,11 @@ class StreamingThinkScrubber:
 
         ``scrubbed_visible`` is the visible prose with thinking blocks removed
         (what the existing callers already consume). ``thinking_text`` is the
-        extracted thinking content from this delta, emitted to the reasoning
-        channel so the UI can render a live "Thinking" disclosure while the
-        model is still generating. Both strings preserve input order so the
-        caller can interleave them to reconstruct the original text."""
+        extracted thinking content from CLOSED blocks in this delta — emitted
+        to the reasoning channel so the UI can render a live "Thinking"
+        disclosure while the model is still generating. Unclosed blocks (no
+        closing tag yet) are held back until the next delta resolves them or
+        flush() releases them as thinking."""
         if not text:
             return "", ""
         buf = self._buf + text
@@ -73,14 +75,14 @@ class StreamingThinkScrubber:
                 close_idx, close_len = self._find_first_tag(buf, self._CLOSE_TAGS)
                 if close_idx == -1:
                     # No close yet: hold back a possible partial close-tag
-                    # prefix, the rest is thinking content for this delta.
-                    held = self._max_partial_suffix(buf, self._CLOSE_TAGS)
-                    thinking_part = buf[:-held] if held else buf
-                    if thinking_part:
-                        thinking.append(thinking_part)
-                    self._hold_partial(buf, self._CLOSE_TAGS)
+                    # prefix, accumulate the rest as thinking.
+                    remainder = self._hold_partial(buf, self._CLOSE_TAGS)
+                    if remainder:
+                        self._thinking_buf.append(remainder)
                     break
-                # Found close tag: everything before it is thinking.
+                # Found close tag: emit accumulated thinking + content before close.
+                thinking.append("".join(self._thinking_buf))
+                self._thinking_buf = []
                 thinking.append(buf[:close_idx])
                 buf = buf[close_idx + close_len:]
                 self._in_block = False
@@ -130,16 +132,19 @@ class StreamingThinkScrubber:
         ``reset()``, and a stale False flag made the new stream's opening
         ``<think>`` look mid-line."""
         if self._in_block:
-            thinking_tail = self._buf
+            thinking_tail = "".join(self._thinking_buf)
             self._buf = ""
+            self._thinking_buf = []
             self._in_block = False
             self._last_emitted_ended_newline = True
             return "", thinking_tail
+        thinking_tail = "".join(self._thinking_buf)
         tail = self._buf
         self._buf = ""
+        self._thinking_buf = []
         self._in_block = False
         self._last_emitted_ended_newline = True
-        return (self._strip_orphan_close_tags(tail) if tail else ""), ""
+        return (self._strip_orphan_close_tags(tail) if tail else ""), thinking_tail
 
     # ── internal helpers ───────────────────────────────────────────────
 
