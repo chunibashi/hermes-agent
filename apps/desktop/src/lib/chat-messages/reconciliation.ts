@@ -18,6 +18,14 @@ const latestBoundary = (...values: (number | undefined)[]) => {
 
 const normalizedTimelineText = (message: ChatMessage) => chatMessageText(message).replace(/\s+/g, ' ').trim()
 
+const reasoningText = (message: ChatMessage) =>
+  message.parts
+    .filter(part => part.type === 'reasoning')
+    .map(part => (part.type === 'reasoning' ? part.text : ''))
+    .join('\n')
+    .replace(/\s+/g, ' ')
+    .trim()
+
 const assistantTimelineMatch = (stored: ChatMessage, local: ChatMessage) => {
   if (stored.id === local.id) {
     return true
@@ -37,7 +45,18 @@ const assistantTimelineMatch = (stored: ChatMessage, local: ChatMessage) => {
 
   const storedText = normalizedTimelineText(stored)
 
-  return Boolean(storedText) && storedText === normalizedTimelineText(local)
+  if (storedText && storedText === normalizedTimelineText(local)) {
+    return true
+  }
+
+  // Thinking-only bubbles (deepseek tool-call turns where the first API call
+  // ships reasoning + tool_calls with no text) have no chatMessageText. Match
+  // them on their reasoning content so the live id survives the refresh —
+  // otherwise the measured "思考了片刻" label is dropped on settle.
+  const localReasoning = reasoningText(local)
+  const storedReasoning = reasoningText(stored)
+
+  return Boolean(localReasoning) && localReasoning === storedReasoning
 }
 
 const timelinePartMatch = (stored: ChatMessagePart, local: ChatMessagePart) => {
@@ -151,6 +170,12 @@ function reconcileLocalAssistantTimeline(nextMessages: ChatMessage[], currentMes
 
     return {
       ...message,
+      // Keep the LIVE id when the stored row was matched to a streaming
+      // bubble: the timer registry keys measured reasoning durations by
+      // `messageId:startIndex`, so adopting the durable row's id here would
+      // drop the measured label ("思考了片刻 → 已思考") right after settle.
+      // The stored row's rowId is still adopted so later refreshes anchor.
+      id: local.id,
       completedAt: latestBoundary(message.completedAt, local.completedAt, ...parts.map(part => part.completedAt)),
       parts,
       timestamp: earliestBoundary(message.timestamp, local.timestamp, ...parts.map(part => part.timestamp))

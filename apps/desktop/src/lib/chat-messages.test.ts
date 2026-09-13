@@ -832,6 +832,90 @@ describe('preserveLocalAssistantErrors', () => {
     expect(assistant?.error).toBe('OpenRouter 403')
     expect(assistant?.pending).toBe(false)
   })
+
+  it('keeps the LIVE id when a stored row reconciles onto a streaming bubble (#思考了片刻 label)', () => {
+    // Turn settle triggers reconcileActiveTranscript (sessions.changed →
+    // busy=false), which rebuilds messages from stored history. The rebuilt
+    // row carries a NEW id (`1789337604-0-assistant`) while the live bubble
+    // was `assistant-stream-1-...`. The timer registry keys measured reasoning
+    // durations by `reasoning:${messageId}:${startIndex}`, so adopting the
+    // stored id here would drop the "思考了片刻" label to "已思考" on settle.
+    const stored = toChatMessages([
+      {
+        role: 'assistant',
+        reasoning: 'think-1 用户调用了 wiki 技能',
+        content: '',
+        timestamp: 3,
+        tool_calls: [{ id: 'tc1', function: { name: 'search_files', arguments: '{}' } }]
+      }
+    ])
+
+    const live: ChatMessage[] = [
+      {
+        completedAt: 3,
+        id: 'assistant-stream-1-1789337604000-1',
+        parts: [
+          {
+            completedAt: 3,
+            source: 'delta',
+            text: 'think-1 用户调用了 wiki 技能',
+            timestamp: 1,
+            type: 'reasoning'
+          },
+          {
+            args: {},
+            completedAt: 2,
+            result: { ok: true },
+            timestamp: 1,
+            toolCallId: 'tc1',
+            toolName: 'search_files',
+            type: 'tool-call'
+          }
+        ],
+        role: 'assistant',
+        timestamp: 1
+      }
+    ]
+
+    const [merged] = preserveLocalAssistantErrors(stored, live)
+
+    // The live id must survive so useMeasuredDuration's timerKey
+    // (`reasoning:${messageId}:${startIndex}`) still finds the measured value.
+    expect(merged.id).toBe('assistant-stream-1-1789337604000-1')
+    expect(merged.parts.map(p => p.type)).toEqual(['reasoning', 'tool-call'])
+    expect((merged.parts[0] as { text: string }).text).toBe('think-1 用户调用了 wiki 技能')
+  })
+
+  it('keeps the LIVE id for a thinking-only bubble matched by reasoning text', () => {
+    // Tool-call turns where the first API call ships reasoning + tool_calls
+    // with no text: the rebuilt row has no chatMessageText, so the match must
+    // fall back to reasoning content for the live id to survive.
+    const stored = toChatMessages([
+      { role: 'assistant', reasoning: 'let me plan the tool call', content: '', timestamp: 3 }
+    ])
+
+    const live: ChatMessage[] = [
+      {
+        completedAt: 3,
+        id: 'assistant-stream-1-1789337604000-1',
+        parts: [
+          {
+            completedAt: 3,
+            source: 'delta',
+            text: 'let me plan the tool call',
+            timestamp: 1,
+            type: 'reasoning'
+          }
+        ],
+        role: 'assistant',
+        timestamp: 1
+      }
+    ]
+
+    const [merged] = preserveLocalAssistantErrors(stored, live)
+
+    expect(merged.id).toBe('assistant-stream-1-1789337604000-1')
+  })
 })
 
 describe('upsertToolPart', () => {
