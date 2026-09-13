@@ -226,23 +226,23 @@ class TestRealisticStreaming:
 
 
 class TestUnclosedBlockFlush:
-    """Unterminated blocks at stream end return held-back content as thinking."""
+    """Unterminated blocks at stream end: thinking emitted during feed, not flush."""
 
-    def test_unclosed_at_stream_end_returns_thinking(self) -> None:
+    def test_unclosed_at_stream_end_returns_thinking_during_feed(self) -> None:
+        """Thinking content is emitted during feed(), not held back for flush()."""
         s = StreamingThinkScrubber()
         # Feed some thinking content without closing tag
         visible, thinking = s.feed("<think>unterminated reasoning")
         assert visible == ""
-        assert thinking == ""
-        # flush returns the held-back content as thinking
+        # Thinking is emitted during feed so the UI can show a live timer
+        assert thinking == "unterminated reasoning"
+        # flush returns nothing for thinking (already emitted)
         visible, thinking = s.flush()
         assert visible == ""
-        assert thinking == "unterminated reasoning"
+        assert thinking == ""
 
     def test_unclosed_with_prior_visible_text(self) -> None:
         s = StreamingThinkScrubber()
-        # After visible text without newline, <think> mid-line is treated as
-        # prose (not a block boundary) — same as "Use the <think> element".
         visible, thinking = s.feed("Hello ")
         assert visible == "Hello "
         assert thinking == ""
@@ -253,16 +253,32 @@ class TestUnclosedBlockFlush:
         assert thinking == ""
 
     def test_deepseek_toolcall_scenario(self) -> None:
-        """DeepSeek sends thinking in its own deltas at stream start, no close tag."""
+        """DeepSeek sends thinking in its own deltas at stream start, no close tag.
+
+        Thinking deltas are emitted DURING streaming so the UI can show a
+        live "Thinking" disclosure with a timer. The flush returns nothing
+        for thinking (already emitted).
+        """
         s = StreamingThinkScrubber()
         # Stream starts with thinking
         v1, t1 = s.feed("<think>")
         assert v1 == "" and t1 == ""
         v2, t2 = s.feed("The user wants me to ")
-        assert v2 == "" and t2 == ""
+        assert v2 == "" and t2 == "The user wants me to "
         v3, t3 = s.feed("call skill_view")
-        assert v3 == "" and t3 == ""
+        assert v3 == "" and t3 == "call skill_view"
         # No more content deltas (tool_calls begin), stream ends
         v4, t4 = s.flush()
         assert v4 == ""
-        assert t4 == "The user wants me to call skill_view"
+        assert t4 == ""
+
+    def test_deepseek_toolcall_full_drive(self) -> None:
+        """Full drive of DeepSeek tool-call scenario matches expected totals."""
+        s = StreamingThinkScrubber()
+        visible, thinking = _drive(s, [
+            "<think>",
+            "The user wants me to ",
+            "call skill_view",
+        ])
+        assert visible == ""
+        assert thinking == "The user wants me to call skill_view"

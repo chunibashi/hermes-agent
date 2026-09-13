@@ -44,7 +44,6 @@ class StreamingThinkScrubber:
         self._in_block: bool = False
         self._buf: str = ""
         self._last_emitted_ended_newline: bool = True
-        self._thinking_buf: list[str] = []
 
     def _emit(self, out: list[str], text: str) -> None:
         """Append visible prose to *out* (orphan close tags stripped) and track the newline flag."""
@@ -58,11 +57,9 @@ class StreamingThinkScrubber:
 
         ``scrubbed_visible`` is the visible prose with thinking blocks removed
         (what the existing callers already consume). ``thinking_text`` is the
-        extracted thinking content from CLOSED blocks in this delta — emitted
-        to the reasoning channel so the UI can render a live "Thinking"
-        disclosure while the model is still generating. Unclosed blocks (no
-        closing tag yet) are held back until the next delta resolves them or
-        flush() releases them as thinking."""
+        extracted thinking content — emitted to the reasoning channel so the
+        UI can render a live "Thinking" disclosure while the model is still
+        generating. """
         if not text:
             return "", ""
         buf = self._buf + text
@@ -75,14 +72,14 @@ class StreamingThinkScrubber:
                 close_idx, close_len = self._find_first_tag(buf, self._CLOSE_TAGS)
                 if close_idx == -1:
                     # No close yet: hold back a possible partial close-tag
-                    # prefix, accumulate the rest as thinking.
+                    # prefix, emit the rest as thinking so the UI sees a live
+                    # "Thinking" block instead of a whole one that finishes
+                    # instantly.
                     remainder = self._hold_partial(buf, self._CLOSE_TAGS)
                     if remainder:
-                        self._thinking_buf.append(remainder)
+                        thinking.append(remainder)
                     break
                 # Found close tag: emit accumulated thinking + content before close.
-                thinking.append("".join(self._thinking_buf))
-                self._thinking_buf = []
                 thinking.append(buf[:close_idx])
                 buf = buf[close_idx + close_len:]
                 self._in_block = False
@@ -124,27 +121,18 @@ class StreamingThinkScrubber:
         """End-of-stream flush. Returns (visible_tail, thinking_tail).
 
         If inside an unterminated block (``_in_block`` True, no closing tag
-        arrived), the held-back content is returned as thinking rather than
-        discarded — the model moved on to non-thinking output (e.g. tool
-        calls), so the block is logically complete. Otherwise the tail is
+        arrived), the held-back content is a partial close-tag prefix that
+        never completed — discard it (it's not thinking content). The thinking
+        content was already emitted during feed(). Otherwise the tail is
         emitted verbatim with orphan close tags stripped. Always resets the
         boundary flag — intra-turn retries flush then stream again without
         ``reset()``, and a stale False flag made the new stream's opening
         ``<think>`` look mid-line."""
-        if self._in_block:
-            thinking_tail = "".join(self._thinking_buf)
-            self._buf = ""
-            self._thinking_buf = []
-            self._in_block = False
-            self._last_emitted_ended_newline = True
-            return "", thinking_tail
-        thinking_tail = "".join(self._thinking_buf)
         tail = self._buf
         self._buf = ""
-        self._thinking_buf = []
         self._in_block = False
         self._last_emitted_ended_newline = True
-        return (self._strip_orphan_close_tags(tail) if tail else ""), thinking_tail
+        return (self._strip_orphan_close_tags(tail) if tail else ""), ""
 
     # ── internal helpers ───────────────────────────────────────────────
 
