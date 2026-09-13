@@ -234,11 +234,16 @@ def _on_tool_start(sid: str, tool_call_id: str, name: str, args: dict):
         return
     session = _sessions.get(sid)
     if session is not None:
-        with contextlib.suppress(Exception):
+        try:
             from agent.display import capture_local_edit_snapshot
             snapshot = capture_local_edit_snapshot(name, args)
             if snapshot is not None:
                 session.setdefault("edit_snapshots", {})[tool_call_id] = snapshot
+                logger.debug("snapshot captured for %s:%s paths=%s", name, tool_call_id, [str(p) for p in snapshot.paths])
+            else:
+                logger.warning("snapshot None for %s:%s args_keys=%s", name, tool_call_id, list(args.keys()) if isinstance(args, dict) else type(args))
+        except Exception as exc:
+            logger.warning("snapshot capture failed for %s:%s: %s", name, tool_call_id, exc)
         session.setdefault("tool_started_at", {})[tool_call_id] = time.time()
     if (_tool_progress_enabled(sid) or _tool_lifecycle_required_for_ui(name)
             or _connector_tool_lifecycle(name, args)):
@@ -276,11 +281,13 @@ def _on_tool_complete(sid: str, tool_call_id: str, name: str, args: dict, result
         payload.update(todo_state)
         if session is not None:
             _cache_todo_state(session, todo_state)
-    with contextlib.suppress(Exception):
+    try:
         from agent.display import render_edit_diff_with_delta
         rendered: list[str] = []
         if render_edit_diff_with_delta(name, result, function_args=args, snapshot=snapshot, print_fn=rendered.append):
             payload["inline_diff"] = "\n".join(rendered)
+    except Exception as exc:
+        logger.warning("skill_manage inline_diff failed: %s (snapshot=%s, args_keys=%s)", exc, snapshot is not None, list(args.keys()) if isinstance(args, dict) else type(args))
     if (_tool_progress_enabled(sid) or payload.get("inline_diff") or _tool_lifecycle_required_for_ui(name)
             or name in _TODO_TOOL_NAMES or _connector_tool_lifecycle(name, args)):
         _emit_tool_lifecycle("tool.complete", sid, name, args, payload)
