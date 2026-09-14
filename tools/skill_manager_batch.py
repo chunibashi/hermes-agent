@@ -151,6 +151,7 @@ def _skill_manage_batch(operations, default_name: str = None, task_id: str = Non
         return tool_error(snap_err, success=False)
     # Single-op path with the gate bypassed (the batch already cleared/staged it).
     results = []
+    op_diffs: list[str] = []
     rollback_failed = False
     token = _smt._skill_gate_bypass.set(True)
     try:
@@ -174,6 +175,10 @@ def _skill_manage_batch(operations, default_name: str = None, task_id: str = Non
                     if k not in ("success", "error") and v is not None:
                         fail.setdefault(k, v)
                 return json.dumps(fail, ensure_ascii=False)
+            # Carry each op's persisted inline diff (see _persist_diff_in_result) onto the
+            # batch result: the desktop renders one FileDiffPanel per row, so join in order.
+            if isinstance(parsed.get("inline_diff"), str) and parsed["inline_diff"].strip():
+                op_diffs.append(parsed["inline_diff"])
             results.append({"name": names[i], "action": op["action"],
                             "file_path": op.get("file_path"), "success": True})
     finally:
@@ -187,6 +192,8 @@ def _skill_manage_batch(operations, default_name: str = None, task_id: str = Non
     # stray non-UTF-8 bytes. Pinning UTF-8 with replacement keeps skill_view deterministic across platforms
     # — falling back to the machine locale (cp1252/GBK) would make the same skill render differently per
     # host (see PR #51701).
-    return json.dumps(
-        {"success": True, "operations_applied": len(results), "results": results},
-        ensure_ascii=False)
+    payload: dict = {"success": True, "operations_applied": len(results), "results": results}
+    if op_diffs:
+        merged = "".join(op_diffs)
+        payload["inline_diff"] = merged
+    return json.dumps(payload, ensure_ascii=False)

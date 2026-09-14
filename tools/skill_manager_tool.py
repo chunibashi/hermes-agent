@@ -739,24 +739,19 @@ def _record_success(action, name, result, *, file_path, absorbed_into, task_id,
         _maybe_debounced_sync_push(name)
 
 
-def skill_manage(
-    action: str, name: str, content: str = None, category: str = None, file_path: str = None,
-    file_content: str = None, old_string: str = None, new_string: str = None,
-    replace_all: bool = False, absorbed_into: str = None, task_id: str = None,
-    session_id: str = None, operations=None) -> str:
-    """Dispatch to the action handler -> JSON string. ``operations`` (atomic batch shape,
-    see _skill_manage_batch) overrides the flat fields."""
-    if operations is not None:
-        return _skill_manage_batch(
-            operations, default_name=name or None, task_id=task_id, session_id=session_id)
+_SINGLE_OP_KEYS = ("content", "category", "file_path", "file_content", "old_string",
+                   "new_string", "replace_all", "absorbed_into")
+
+
+def _skill_manage_single(args: dict) -> str:
+    """Legacy flat-shape path (staged replay, old transcripts)."""
+    action, name = args.get("action", ""), args.get("name", "")
     if (preflight := _background_review_preflight(action, name)) is not None:
         return json.dumps(preflight, ensure_ascii=False)
     # Approval gate: skills are too large to review inline, so they always stage regardless
     # of origin; bypassed when replaying an approved staged write.
-    args = dict(content=content, category=category, file_path=file_path, file_content=file_content,
-                old_string=old_string, new_string=new_string, replace_all=replace_all,
-                absorbed_into=absorbed_into)
-    if (gate_result := _apply_skill_write_gate(action, name, **args)) is not None:
+    gate_args = {k: args.get(k) for k in _SINGLE_OP_KEYS}
+    if (gate_result := _apply_skill_write_gate(action, name, **gate_args)) is not None:
         return gate_result
     # Ledger pre-capture: telemetry, not a gate — failures must NEVER block the mutation. delete
     # destroys the whole package (consolidation may have re-homed support files first), so
@@ -770,18 +765,71 @@ def skill_manage(
         _ledger_before = _ledger.capture_before(
             _pre["path"] if _pre else None, complete_package=(action == "delete"), skill=name)
     for arg, missing, message in _REQUIRED_ARGS.get(action, ()):
-        if missing(args[arg]):
+        if missing(args.get(arg)):
             return tool_error(message, success=False)
+    # Persisted-diff pre-capture: the handler mutates the files next, so the before-state
+    # must be read NOW (same primitive tool_progress uses for the live inline_diff event).
+    # Best-effort preview data, never a gate.
+    _diff_snapshot = None
+    with suppress(Exception):
+        from agent.display import capture_local_edit_snapshot
+        _diff_snapshot = capture_local_edit_snapshot("skill_manage", {
+            "action": action, "name": name, "category": args.get("category"),
+            "file_path": args.get("file_path")})
     handler = _ACTION_HANDLERS.get(action, lambda a: _err(
         f"Unknown action '{action}'. Use: create, edit, patch, delete, write_file, remove_file"))
-    result = handler({"name": name, **args})
+    result = handler({"name": name, **gate_args})
     if isinstance(result, str):
         return result  # tool_error JSON for argument-shape problems (patch)
     if result.get("success"):
+        _persist_diff_in_result(_diff_snapshot, result)
         _record_success(
-            action, name, result, file_path=file_path, absorbed_into=absorbed_into,
-            task_id=task_id, session_id=session_id, ledger_before=_ledger_before)
+            action, name, result, file_path=args.get("file_path"), absorbed_into=args.get("absorbed_into"),
+            task_id=args.get("task_id"), session_id=args.get("session_id"), ledger_before=_ledger_before)
     return json.dumps(result, ensure_ascii=False)
+
+
+def skill_manage(
+    action: str, name: str, content: str = None, category: str = None, file_path: str = None,
+    file_content: str = None, old_string: str = None, new_string: str = None,
+    replace_all: bool = False, absorbed_into: str = None, task_id: str = None,
+    session_id: str = None, operations=None) -> str:
+    """Dispatch to the action handler -> JSON string. ``operations`` (atomic batch shape,
+    see _skill_manage_batch) overrides the flat fields."""
+    if operations is not None:
+        return _skill_manage_batch(
+            operations, default_name=name or None, task_id=task_id, session_id=session_id)
+    return _skill_manage_single({
+        "action": action, "name": name, "content": content, "category": category,
+        "file_path": file_path, "file_content": file_content, "old_string": old_string,
+        "new_string": new_string, "replace_all": replace_all, "absorbed_into": absorbed_into,
+        "task_id": task_id, "session_id": session_id})
+
+
+# Persisted inline-diff budget: skill files are small by construction, but a full-package
+# delete diff can still be large; cap what enters the model-facing result (the desktop's
+# FileDiffPanel renders ~80 lines and marks truncation).
+_MAX_PERSISTED_DIFF_CHARS = 20_000
+
+
+def _persist_diff_in_result(snapshot, result: dict) -> None:
+    """Attach the before/after unified diff to a successful mutation result.
+
+    The desktop rehydrates settled tool rows from the persisted result, and its
+    fallback view reads the diff from ``result.inline_diff``/``result.diff`` —
+    exactly how the `patch` tool's diff survives reload. Without this key a
+    skill_manage row settles as a bare payload once the live event stream is
+    gone (see apps/desktop fallback.tsx: only `patch` persisted its diff).
+    ``snapshot`` is the before-state captured BEFORE the handler wrote the files.
+    """
+    with suppress(Exception):
+        from agent.display import edit_diff_from_snapshot
+        diff = edit_diff_from_snapshot(snapshot) if snapshot is not None else None
+        if not diff:
+            return
+        if len(diff) > _MAX_PERSISTED_DIFF_CHARS:
+            diff = diff[:_MAX_PERSISTED_DIFF_CHARS] + "\n… diff truncated …\n"
+        result["inline_diff"] = diff
 
 
 # --- OpenAI Function-Calling Schema -------------------------------------------

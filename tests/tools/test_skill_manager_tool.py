@@ -20,6 +20,7 @@ from tools.skill_manager_tool import (
     _write_file,
     _remove_file,
     _find_skill,
+    _skill_manage_from,
     skill_manage,
 )
 from agent.skill_utils import (
@@ -397,6 +398,43 @@ class TestRemoveFile:
 
 
 class TestSkillManageDispatcher:
+    def test_flat_mutation_result_carries_persisted_inline_diff(self, tmp_path):
+        """The desktop rehydrates settled tool rows from the PERSISTED result
+        (its live `inline_diff` event side-channel is memory-only) — the same
+        contract `patch` established with its `diff` key. A successful create
+        and a successful patch must both surface a unified diff in the result
+        JSON, or the row degrades to a bare payload once the stream is gone."""
+        with _skill_dir(tmp_path):
+            created = json.loads(skill_manage(
+                action="create", name="diff-skill", content=VALID_SKILL_CONTENT))
+            patched = json.loads(skill_manage(
+                action="patch", name="diff-skill",
+                old_string="Step 1: Do the thing.",
+                new_string="Step 1: Do the thing safely."))
+        assert created["success"] is True
+        assert isinstance(created.get("inline_diff"), str)
+        assert "+Step 1: Do the thing." in created["inline_diff"]
+        assert "diff-skill" in created["inline_diff"]
+        assert patched["success"] is True
+        assert "-Step 1: Do the thing." in patched["inline_diff"]
+        assert "+Step 1: Do the thing safely." in patched["inline_diff"]
+
+    def test_batch_result_merges_op_inline_diffs(self, tmp_path):
+        """Operations-array calls (the advertised shape) must persist the
+        joined diff too — batch is the path the desktop actually sees."""
+        with _skill_dir(tmp_path):
+            raw = _skill_manage_from({"operations": [
+                {"action": "create", "name": "batch-diff", "content": VALID_SKILL_CONTENT},
+                {"action": "patch", "name": "batch-diff",
+                 "old_string": "Step 1: Do the thing.",
+                 "new_string": "Step 1: Do the thing safely."}]})
+        result = json.loads(raw)
+        assert result["success"] is True
+        assert result["operations_applied"] == 2
+        diff = result.get("inline_diff", "")
+        assert "-Step 1: Do the thing." in diff
+        assert "+Step 1: Do the thing safely." in diff
+
     @pytest.mark.parametrize("old_string", [None, ""])
     def test_patch_missing_old_string_carries_recovery_guidance(self, tmp_path, old_string):
         """#33064 — the actionable error must survive the public dispatch path.

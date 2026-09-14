@@ -659,6 +659,13 @@ def _diff_from_snapshot(snapshot: LocalEditSnapshot | None) -> str | None:
     return "".join(chunks) or None
 
 
+def edit_diff_from_snapshot(snapshot: LocalEditSnapshot | None) -> str | None:
+    """Public wrapper: unified diff between a captured before-snapshot and current files.
+    Persisted into write-tool results (skill_manage) so the UI can rehydrate the diff
+    after reload — the same contract `patch` established with its `diff` result field."""
+    return _diff_from_snapshot(snapshot)
+
+
 def extract_edit_diff(
     tool_name: str, result: str | None, *,
     function_args: dict | None = None, snapshot: LocalEditSnapshot | None = None,
