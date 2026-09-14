@@ -230,7 +230,6 @@ def _emit_tool_lifecycle(event, sid, name, args, payload):
 
 
 def _on_tool_start(sid: str, tool_call_id: str, name: str, args: dict):
-    logger.warning("DEBUG _on_tool_start fired for %s:%s args_keys=%s", name, tool_call_id, list(args.keys()) if isinstance(args, dict) else type(args))
     if _connector_lifecycle_is_stale(sid, name, args):
         return
     session = _sessions.get(sid)
@@ -285,9 +284,7 @@ def _on_tool_complete(sid: str, tool_call_id: str, name: str, args: dict, result
     try:
         from agent.display import render_edit_diff_with_delta
         rendered: list[str] = []
-        has_diff = render_edit_diff_with_delta(name, result, function_args=args, snapshot=snapshot, print_fn=rendered.append)
-        logger.warning("DEBUG _on_tool_complete for %s:%s snapshot=%s has_diff=%s rendered=%d inline_diff_set=%s", name, tool_call_id, snapshot is not None, has_diff, len(rendered), bool(rendered))
-        if has_diff:
+        if render_edit_diff_with_delta(name, result, function_args=args, snapshot=snapshot, print_fn=rendered.append):
             payload["inline_diff"] = "\n".join(rendered)
     except Exception as exc:
         logger.warning("skill_manage inline_diff failed: %s (snapshot=%s, args_keys=%s)", exc, snapshot is not None, list(args.keys()) if isinstance(args, dict) else type(args))
