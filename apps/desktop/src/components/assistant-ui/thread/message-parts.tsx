@@ -16,7 +16,7 @@ import { AgentDeliveryNotice, deliveryTargetFromCommand } from '@/components/ass
 import { TimelineTimestamp } from '@/components/assistant-ui/thread/timeline-timestamp'
 import { DelegateTool } from '@/components/assistant-ui/tool/delegate'
 import { ToolFallback, ToolGroupSlot } from '@/components/assistant-ui/tool/fallback'
-import { formatElapsed, useElapsedSeconds, useMeasuredDuration } from '@/components/chat/activity-timer'
+import { formatElapsed, reasoningContentKey, useElapsedSeconds, useMeasuredDuration } from '@/components/chat/activity-timer'
 import { ActivityTimerText } from '@/components/chat/activity-timer-text'
 import { GeneratedImage } from '@/components/chat/generated-image-result'
 import { SCAFFOLD_LABEL_CLASS, SCAFFOLD_META_CLASS, ScaffoldRow } from '@/components/chat/scaffold-row'
@@ -146,6 +146,7 @@ const TimelineMarkdownText: FC<TimelineTextPartProps> = ({ completedAt, timestam
 const ThinkingDisclosure: FC<{
   children: ReactNode
   completedAt?: number
+  contentKey?: string
   messageRunning?: boolean
   pending?: boolean
   timestamp?: number
@@ -157,14 +158,14 @@ const ThinkingDisclosure: FC<{
   // just arrived). Latching a live block keeps its preview open through the
   // settle; blocks that mount already finished stay collapsed.
   live?: boolean
-}> = ({ children, completedAt, messageRunning = false, pending = false, timestamp, timerKey, live = false }) => {
+}> = ({ children, completedAt, contentKey, messageRunning = false, pending = false, timestamp, timerKey, live = false }) => {
   const { t } = useI18n()
   const reasoningCollapsedByDefault = useStore($reasoningCollapsedByDefault)
   // `null` = no explicit user toggle yet. Live reasoning remains visible by
   // default, unless the user opts into the low-jitter collapsed presentation.
   const [userOpen, setUserOpen] = useState<boolean | null>(null)
   const elapsed = useElapsedSeconds(pending, timerKey)
-  const thoughtFor = useMeasuredDuration(pending, timerKey)
+  const thoughtFor = useMeasuredDuration(pending, timerKey, contentKey)
   const scrollRef = useRef<HTMLDivElement | null>(null)
   const contentRef = useRef<HTMLDivElement | null>(null)
   const enterRef = useEnterAnimation(messageRunning, timerKey)
@@ -345,6 +346,16 @@ const ReasoningAccordionGroup: FC<{ children?: ReactNode; endIndex: number; star
     }, undefined)
   )
 
+  const contentKey = useAuiState(s => {
+    const texts = s.message.parts
+      .slice(Math.max(0, startIndex), endIndex + 1)
+      .filter(p => p?.type === 'reasoning')
+      .map(p => (p as { text?: string }).text ?? '')
+      .join('\n')
+
+    return texts.trim() ? reasoningContentKey(texts) : undefined
+  })
+
   if (!hasContent) {
     return null
   }
@@ -356,6 +367,7 @@ const ReasoningAccordionGroup: FC<{ children?: ReactNode; endIndex: number; star
     // report the running total as each block's duration.
     <ThinkingDisclosure
       completedAt={completedAt}
+      contentKey={contentKey}
       live={messageRunning && (pending || isBlockRelayed)}
       messageRunning={messageRunning}
       pending={pending}

@@ -11,6 +11,41 @@ const startedAtByKey = new Map<string, number>()
 // measured them. See `useMeasuredDuration`.
 const durationByKey = new Map<string, number>()
 
+// The same durations indexed by the reasoning text itself. A message id is an
+// accident of which renderer painted it first: background reconciliation,
+// re-hydration after a tab switch, or a settle-time store rewrite can hand the
+// identical sealed block a new id, and a duration remembered only under the
+// old one reads as `null` — the label silently degrades to the untimed
+// "已思考". Content survives every id swap, so measured blocks are mirrored
+// here and consulted when the id lookup misses. The key is the text's length
+// plus its tail: length changes at every streamed token (so partial blocks can
+// never collide with the final seal) while the tail stays cheap to slice.
+const durationByContentKey = new Map<string, number>()
+
+export function reasoningContentKey(text: string): string {
+  const normalized = text.trim().replace(/\s+/g, ' ')
+
+  return normalized ? `reasoning-content:${normalized.length}:${normalized.slice(-120)}` : ''
+}
+
+function rememberDuration(timerKey: string, seconds: number, contentKey?: string): void {
+  durationByKey.set(timerKey, seconds)
+
+  if (contentKey) {
+    durationByContentKey.set(contentKey, seconds)
+  }
+}
+
+function recallDuration(timerKey: string, contentKey?: string): number | undefined {
+  const byId = durationByKey.get(timerKey)
+
+  if (byId !== undefined) {
+    return byId
+  }
+
+  return contentKey ? durationByContentKey.get(contentKey) : undefined
+}
+
 function startedAt(key?: string): number {
   if (!key) {
     return Date.now()
@@ -89,10 +124,13 @@ export function useElapsedSeconds(active = true, timerKey?: string, since?: numb
  * session, or reasoning that arrived already complete — has no duration and
  * says so, rather than reporting a timer that never ran.
  */
-export function useMeasuredDuration(active: boolean, timerKey: string): null | number {
+export function useMeasuredDuration(
+  active: boolean,
+  timerKey: string,
+  contentKey?: string
+): null | number {
   const elapsed = useElapsedSeconds(active, timerKey)
-  const [watching, setWatching] = useState(false)
-  const [measured, setMeasured] = useState<null | number>(() => durationByKey.get(timerKey) ?? null)
+  const [measured, setMeasured] = useState<null | number>(() => recallDuration(timerKey, contentKey) ?? null)
   // Imperative flag for the unmount cleanup below: was a measurement in
   // flight when this component went away? React state is already gone by
   // teardown time, so the cleanup reads this ref (written directly in the
@@ -109,13 +147,25 @@ export function useMeasuredDuration(active: boolean, timerKey: string): null | n
       const finalElapsed = Math.max(elapsed, Math.floor((Date.now() - startedAt(timerKey)) / 1000))
 
       watchingRef.current = false
-      durationByKey.set(timerKey, finalElapsed)
+      rememberDuration(timerKey, finalElapsed, contentKey)
       setMeasured(finalElapsed)
+    } else if (measured === null) {
+      // An id swap that lands in the same commit as the settle runs the
+      // previous render's cleanup FIRST — that freeze stored the duration
+      // under the old keys and cleared watchingRef, so the transition branch
+      // above can no longer fire for this component instance. The block's
+      // text is unchanged across the swap, so recover it from the registry
+      // by content key instead of degrading to the untimed label.
+      const recovered = recallDuration(timerKey, contentKey)
+
+      if (recovered !== undefined) {
+        setMeasured(recovered)
+      }
     }
     // `watching` state is no longer read here — the ref above is the single
     // source of the in-flight flag, so the label flip and the unmount freeze
     // can never disagree about whether the block was being measured.
-  }, [active, elapsed, timerKey])
+  }, [active, contentKey, elapsed, measured, timerKey])
 
   // Unmount while still watching: the message object identity changes on
   // settle/interim sealing (new ChatMessage → new ThreadMessage), remounting
@@ -125,10 +175,10 @@ export function useMeasuredDuration(active: boolean, timerKey: string): null | n
   useEffect(
     () => () => {
       if (watchingRef.current) {
-        durationByKey.set(timerKey, Math.max(0, Math.floor((Date.now() - startedAt(timerKey)) / 1000)))
+        rememberDuration(timerKey, Math.max(0, Math.floor((Date.now() - startedAt(timerKey)) / 1000)), contentKey)
       }
     },
-    [timerKey]
+    [contentKey, timerKey]
   )
 
   return measured
