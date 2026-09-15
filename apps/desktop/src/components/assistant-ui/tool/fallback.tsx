@@ -489,9 +489,14 @@ function ToolEntry({ part }: ToolEntryProps) {
   // what's painted, so the row's Copy button still yields the full output.
   const copyAction = useMemo(() => toolCopyPayload(stablePart, view), [stablePart, view])
 
+  // Any card carrying an inline diff earns the `+N −M` title stat — not just
+  // the classic file editors. `skill_manage` (and future diff-bearing cards)
+  // persist `inline_diff` under the same contract as `patch`, and the title
+  // count is derived from the diff itself, so no extra classification gate is
+  // needed. Rows without a diff stay null and show nothing.
   const diffStats = useMemo(
-    () => (isFileEdit && view.inlineDiff ? countDiffLineStats(view.inlineDiff) : null),
-    [isFileEdit, view.inlineDiff]
+    () => (view.inlineDiff ? countDiffLineStats(view.inlineDiff) : null),
+    [view.inlineDiff]
   )
 
   const showDiffStats = !isPending && Boolean(diffStats && (diffStats.added > 0 || diffStats.removed > 0))
