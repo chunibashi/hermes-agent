@@ -3495,6 +3495,11 @@ export interface Translations {
         loading: string
         loaded: string
         loadFailed: string
+        managing: string
+        created: string
+        managed: string
+        deleted: string
+        manageFailed: string
         readingResource: string
         readResource: string
         resourceFailed: string

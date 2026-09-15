@@ -35,4 +35,62 @@ describe('skill activity identity', () => {
     expect(summary).toContain('ran 1 command')
     expect(summary).toContain('1 tool call failed')
   })
+
+  it('names skill_manage operations with the same identity format, ops array and flat alike', () => {
+    const manage = { type: 'tool-call' as const, toolName: 'skill_manage' }
+
+    // Advertised batch schema: operations array.
+    expect(buildToolView({ ...manage, args: { operations: [{ action: 'create', name: 'my-skill' }] } }, '').title).toBe(
+      'Editing skill: my-skill'
+    )
+    expect(
+      buildToolView(
+        { ...manage, args: { operations: [{ action: 'create', name: 'my-skill' }] }, result: { success: true } },
+        ''
+      ).title
+    ).toBe('Created skill: my-skill')
+    expect(
+      buildToolView(
+        { ...manage, args: { operations: [{ action: 'patch', name: 'my-skill' }] }, result: { success: true } },
+        ''
+      ).title
+    ).toBe('Edited skill: my-skill')
+    expect(
+      buildToolView(
+        { ...manage, args: { operations: [{ action: 'delete', name: 'my-skill' }] }, result: { success: true } },
+        ''
+      ).title
+    ).toBe('Deleted skill: my-skill')
+
+    // Multi-op batches show the first target with a +N suffix.
+    expect(
+      buildToolView(
+        {
+          ...manage,
+          args: {
+            operations: [
+              { action: 'patch', name: 'a' },
+              { action: 'patch', name: 'b' }
+            ]
+          },
+          result: { success: true }
+        },
+        ''
+      ).title
+    ).toBe('Edited skill: a +1')
+
+    // Legacy flat shape still names correctly.
+    expect(
+      buildToolView({ ...manage, args: { action: 'patch', name: 'flat-skill' }, result: { success: true } }, '').title
+    ).toBe('Edited skill: flat-skill')
+
+    // Failures and empty ops.
+    expect(
+      buildToolView(
+        { ...manage, args: { operations: [{ action: 'patch', name: 'x' }] }, isError: true, result: 'nope' },
+        ''
+      ).title
+    ).toBe('Failed to edit skill: x')
+    expect(buildToolView({ ...manage, args: {}, result: { success: true } }, '').title).toBe('Skill Manage')
+  })
 })

@@ -494,10 +494,7 @@ function ToolEntry({ part }: ToolEntryProps) {
   // persist `inline_diff` under the same contract as `patch`, and the title
   // count is derived from the diff itself, so no extra classification gate is
   // needed. Rows without a diff stay null and show nothing.
-  const diffStats = useMemo(
-    () => (view.inlineDiff ? countDiffLineStats(view.inlineDiff) : null),
-    [view.inlineDiff]
-  )
+  const diffStats = useMemo(() => (view.inlineDiff ? countDiffLineStats(view.inlineDiff) : null), [view.inlineDiff])
 
   const showDiffStats = !isPending && Boolean(diffStats && (diffStats.added > 0 || diffStats.removed > 0))
 
