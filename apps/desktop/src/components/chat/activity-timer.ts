@@ -193,11 +193,7 @@ export function useElapsedSeconds(active = true, timerKey?: string, since?: numb
  * session, or reasoning that arrived already complete — has no duration and
  * says so, rather than reporting a timer that never ran.
  */
-export function useMeasuredDuration(
-  active: boolean,
-  timerKey: string,
-  contentKey?: string
-): null | number {
+export function useMeasuredDuration(active: boolean, timerKey: string, contentKey?: string): null | number {
   const elapsed = useElapsedSeconds(active, timerKey)
   const [measured, setMeasured] = useState<null | number>(() => recallDuration(timerKey, contentKey) ?? null)
   // Imperative flag for the unmount cleanup below: was a measurement in

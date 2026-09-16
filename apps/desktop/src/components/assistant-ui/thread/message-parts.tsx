@@ -17,7 +17,12 @@ import { AgentDeliveryNotice, deliveryTargetFromCommand } from '@/components/ass
 import { TimelineTimestamp } from '@/components/assistant-ui/thread/timeline-timestamp'
 import { DelegateTool } from '@/components/assistant-ui/tool/delegate'
 import { ToolFallback, ToolGroupSlot } from '@/components/assistant-ui/tool/fallback'
-import { formatElapsed, reasoningContentKey, useElapsedSeconds, useMeasuredDuration } from '@/components/chat/activity-timer'
+import {
+  formatElapsed,
+  reasoningContentKey,
+  useElapsedSeconds,
+  useMeasuredDuration
+} from '@/components/chat/activity-timer'
 import { ActivityTimerText } from '@/components/chat/activity-timer-text'
 import { GeneratedImage } from '@/components/chat/generated-image-result'
 import { SCAFFOLD_LABEL_CLASS, SCAFFOLD_META_CLASS, ScaffoldRow } from '@/components/chat/scaffold-row'
@@ -173,7 +178,16 @@ const ThinkingDisclosure: FC<{
   // just arrived). Latching a live block keeps its preview open through the
   // settle; blocks that mount already finished stay collapsed.
   live?: boolean
-}> = ({ children, completedAt, contentKey, messageRunning = false, pending = false, timestamp, timerKey, live = false }) => {
+}> = ({
+  children,
+  completedAt,
+  contentKey,
+  messageRunning = false,
+  pending = false,
+  timestamp,
+  timerKey,
+  live = false
+}) => {
   const { t } = useI18n()
   const reasoningCollapsedByDefault = useStore($reasoningCollapsedByDefault)
   // `null` = no explicit user toggle yet. Live reasoning remains visible by

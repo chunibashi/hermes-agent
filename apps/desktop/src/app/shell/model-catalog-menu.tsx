@@ -281,13 +281,7 @@ export function ModelCatalogMenu({
 
   const groups = useMemo(
     () =>
-      groupModels(
-        pickerProviders,
-        search,
-        { model: current.model, provider: current.provider },
-        shownKeys,
-        favorites
-      ),
+      groupModels(pickerProviders, search, { model: current.model, provider: current.provider }, shownKeys, favorites),
     [pickerProviders, search, current.model, current.provider, shownKeys, favorites]
   )
 
@@ -505,7 +499,10 @@ export function ModelCatalogMenu({
         <DropdownMenuItem className={dropdownMenuRow} disabled>
           {error}
         </DropdownMenuItem>
-      ) : groups.length === 0 && moaPresets.length === 0 && favoriteEntries.length === 0 && shownDownloads.length === 0 ? (
+      ) : groups.length === 0 &&
+        moaPresets.length === 0 &&
+        favoriteEntries.length === 0 &&
+        shownDownloads.length === 0 ? (
         <DropdownMenuItem className={dropdownMenuRow} disabled>
           {copy.noModels}
         </DropdownMenuItem>
@@ -584,9 +581,7 @@ export function ModelCatalogMenu({
                         <HighlightMatches query={search} text={name} />
                         {meta ? <span className="text-(--ui-text-tertiary)"> {meta}</span> : null}
                       </span>
-                      {isCurrent ? (
-                        <Codicon className="ml-auto text-foreground" name="check" size="0.75rem" />
-                      ) : null}
+                      {isCurrent ? <Codicon className="ml-auto text-foreground" name="check" size="0.75rem" /> : null}
                     </DropdownMenuSubTrigger>
                     <ModelEditSubmenu
                       canDisableReasoning={caps?.can_disable_reasoning}

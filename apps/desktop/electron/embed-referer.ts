@@ -73,9 +73,7 @@ export function startYouTubeEmbedProxy(): Promise<{ port: number; server: Server
 
     const videoId = match[1]
 
-    const query = (req.url || '').includes('?')
-      ? (req.url || '').split('?')[1]
-      : ''
+    const query = (req.url || '').includes('?') ? (req.url || '').split('?')[1] : ''
 
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' })
     res.end(`<!DOCTYPE html><html><body style="margin:0">

@@ -111,7 +111,12 @@ describe('toChatMessages', () => {
         content: wrapped,
         timestamp: 2
       },
-      { role: 'assistant', content: 'Answer.', timestamp: 3, tool_calls: [{ id: 'call_abc123', function: { name: 'web_search', arguments: '{"query":"hermes"}' } }] }
+      {
+        role: 'assistant',
+        content: 'Answer.',
+        timestamp: 3,
+        tool_calls: [{ id: 'call_abc123', function: { name: 'web_search', arguments: '{"query":"hermes"}' } }]
+      }
     ])
 
     const part = messages.flatMap(m => m.parts).find(p => p.type === 'tool-call') as Extract<
@@ -602,7 +607,12 @@ describe('preserveLocalAssistantErrors', () => {
     // finish carries the full result (search hits, stdout, ...). Reconciling
     // must not downgrade the live data to the context placeholder.
     const durable = toChatMessages([
-      { role: 'assistant', content: '', timestamp: 1, tool_calls: [{ id: 'tc1', function: { name: 'web_search', arguments: '{"query":"holidays"}' } }] },
+      {
+        role: 'assistant',
+        content: '',
+        timestamp: 1,
+        tool_calls: [{ id: 'tc1', function: { name: 'web_search', arguments: '{"query":"holidays"}' } }]
+      },
       { role: 'tool', name: 'web_search', content: '', context: 'holidays', args: { query: 'holidays' }, timestamp: 2 }
     ])
 
@@ -627,17 +637,19 @@ describe('preserveLocalAssistantErrors', () => {
 
     const [message] = preserveLocalAssistantErrors(durable, live)
 
-    const part = message.parts.find(p => p.type === 'tool-call') as Extract<
-      ChatMessagePart,
-      { type: 'tool-call' }
-    >
+    const part = message.parts.find(p => p.type === 'tool-call') as Extract<ChatMessagePart, { type: 'tool-call' }>
 
     expect(part.result).toEqual({ data: { web: [{ title: 'result one', url: 'https://example.com/a' }] } })
   })
 
   it('keeps the durable tool result when both rows carry data (stored is authoritative)', () => {
     const durable = toChatMessages([
-      { role: 'assistant', content: '', timestamp: 1, tool_calls: [{ id: 'tc2', function: { name: 'terminal', arguments: '{"command":"echo hi"}' } }] },
+      {
+        role: 'assistant',
+        content: '',
+        timestamp: 1,
+        tool_calls: [{ id: 'tc2', function: { name: 'terminal', arguments: '{"command":"echo hi"}' } }]
+      },
       { role: 'tool', name: 'terminal', tool_call_id: 'tc2', content: 'stored output', timestamp: 2 }
     ])
 
@@ -662,10 +674,7 @@ describe('preserveLocalAssistantErrors', () => {
 
     const [message] = preserveLocalAssistantErrors(durable, live)
 
-    const part = message.parts.find(p => p.type === 'tool-call') as Extract<
-      ChatMessagePart,
-      { type: 'tool-call' }
-    >
+    const part = message.parts.find(p => p.type === 'tool-call') as Extract<ChatMessagePart, { type: 'tool-call' }>
 
     expect(part.result).toBe('stored output')
   })
@@ -1638,7 +1647,10 @@ describe('sealOpenToolParts', () => {
       )
     ])
 
-    const messages = [...stopped, { id: 'u2', role: 'user', parts: [{ type: 'text', text: 'ask something else' }] } as ChatMessage]
+    const messages = [
+      ...stopped,
+      { id: 'u2', role: 'user', parts: [{ type: 'text', text: 'ask something else' }] } as ChatMessage
+    ]
 
     const restored = restorePendingClarifyToolCall(
       messages,
