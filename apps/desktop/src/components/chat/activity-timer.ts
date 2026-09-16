@@ -30,7 +30,10 @@ const durationByKey = new Map<string, number>()
 const durationByContentKey = new Map<string, number>()
 
 const DURATIONS_STORAGE_KEY = 'hermes.thinking-durations.v1'
-const MAX_PERSISTED_DURATIONS = 800
+// 800 was too small: a long-running window (a debug session writing a key per
+// thought) evicted a user's fresh test sessions before they were reopened.
+// 4000 × ~1.3KB still fits comfortably in localStorage's multi-MB budget.
+const MAX_PERSISTED_DURATIONS = 4000
 
 export function reasoningContentKey(text: string): string {
   const normalized = text.trim().replace(/\s+/g, ' ')

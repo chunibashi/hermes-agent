@@ -36,19 +36,27 @@ interface Controls {
   settle: () => void
 }
 
-function Harness({ onControls }: { onControls?: (controls: Controls) => void } = {}) {
-  const [messages, setMessages] = useState<ChatMessage[]>([
-    { id: 'user-1', role: 'user', parts: [text('完成 wiki 任务')] },
-    // Phase 1: think-1 is the streaming message's only part — the live block.
-    {
-      id: 'assistant-stream-1',
-      role: 'assistant',
-      parts: [think1()],
-      pending: true
-    }
-  ])
+function Harness({
+  initial,
+  onControls
+}: {
+  initial?: ChatMessage[]
+  onControls?: (controls: Controls) => void
+} = {}) {
+  const [messages, setMessages] = useState<ChatMessage[]>(
+    initial ?? [
+      { id: 'user-1', role: 'user', parts: [text('完成 wiki 任务')] },
+      // Phase 1: think-1 is the streaming message's only part — the live block.
+      {
+        id: 'assistant-stream-1',
+        role: 'assistant',
+        parts: [think1()],
+        pending: true
+      }
+    ]
+  )
 
-  const [busy, setBusy] = useState(true)
+  const [busy, setBusy] = useState(initial === undefined)
   const startedAt = useRef(Date.now())
 
   onControls?.({
@@ -169,5 +177,53 @@ describe('single-channel multi-block turn labels (production pipeline)', () => {
 
     const after = labels()
     expect(after.some(l => /^Thought$/.test(l))).toBe(true)
+  })
+
+  // # User contract: the FIRST thinking block of a message must never read as
+  // the untimed 已思考 — not after settle, and not after an app restart where
+  // the measured-duration registry (and its persisted mirror) is gone. A
+  // history-mount of a message whose first block was never measured by THIS
+  // process must still read its finished label as 思考了片刻, while blocks
+  // that are not the first keep the honest untimed 已思考.
+  it('first block falls back to 思考了片刻, later blocks stay 已思考, on history mount', async () => {
+    render(
+      <Harness
+        initial={
+          // Completed turn, loaded from history: no measurement was ever
+          // taken (different process / registry cleared).
+          [{
+            id: 'user-1',
+            role: 'user',
+            parts: [text('完成 wiki 任务')]
+          }, {
+            id: 'stored-1001-1',
+            role: 'assistant',
+            pending: false,
+            completedAt: 2000,
+            parts: [
+              { ...reasoningPart('history-only first block never measured in this process', 1000, 'delta'), completedAt: 1500 },
+              text('让我先加载技能'),
+              {
+                type: 'tool-call',
+                toolCallId: 'tool-1',
+                toolName: 'search_files',
+                args: {},
+                argsText: '{}',
+                result: { ok: true }
+              },
+              think2(),
+              text('最终回复')
+            ]
+          }]
+        }
+        onControls={() => undefined}
+      />
+    )
+
+    await waitFor(() => {
+      const current = labels()
+      expect(current.some(l => l.startsWith('Thought briefly'))).toBe(true)
+      expect(current.some(l => /^Thought(?![ ,\d])/.test(l))).toBe(true)
+    })
   })
 })

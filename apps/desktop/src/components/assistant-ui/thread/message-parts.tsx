@@ -162,6 +162,12 @@ const ThinkingDisclosure: FC<{
   children: ReactNode
   completedAt?: number
   contentKey?: string
+  // The first reasoning block of an assistant message never degrades to the
+  // untimed label. The user watches it stream (思考了片刻/思考了Ns) and
+  // expects it to keep reading as measured after settle AND after an app
+  // restart — where the registry is gone but the *semantics* are still
+  // known. Later blocks keep the honest untimed fallback.
+  firstOfMessage?: boolean
   messageRunning?: boolean
   pending?: boolean
   timestamp?: number
@@ -173,7 +179,17 @@ const ThinkingDisclosure: FC<{
   // just arrived). Latching a live block keeps its preview open through the
   // settle; blocks that mount already finished stay collapsed.
   live?: boolean
-}> = ({ children, completedAt, contentKey, messageRunning = false, pending = false, timestamp, timerKey, live = false }) => {
+}> = ({
+  children,
+  completedAt,
+  contentKey,
+  firstOfMessage = false,
+  messageRunning = false,
+  pending = false,
+  timestamp,
+  timerKey,
+  live = false
+}) => {
   const { t } = useI18n()
   const reasoningCollapsedByDefault = useStore($reasoningCollapsedByDefault)
   // `null` = no explicit user toggle yet. Live reasoning remains visible by
@@ -204,16 +220,23 @@ const ThinkingDisclosure: FC<{
   // says so, unless the timer's whole seconds round it to "0s" — accurate and
   // useless — in which case it just says it was quick. With no duration at all
   // it still has to read as finished; a turn that ended must not go on saying
-  // "Thinking".
+  // "Thinking". The FIRST block of a message is exempt from the untimed label:
+  // the user watched it being measured (思考了片刻/思考了Ns) and expects it to
+  // keep reading measured after settle — and after an app restart, when the
+  // measurement registry is gone but the semantics are still known.
   let thoughtLabel = t.assistant.thread.thinking
 
   if (!pending) {
-    if (thoughtFor === null) {
-      thoughtLabel = t.assistant.thread.thought
-    } else if (thoughtFor < 1) {
+    if (thoughtFor !== null) {
+      if (thoughtFor < 1) {
+        thoughtLabel = t.assistant.thread.thoughtBriefly
+      } else {
+        thoughtLabel = t.assistant.thread.thoughtFor(formatElapsed(thoughtFor))
+      }
+    } else if (firstOfMessage) {
       thoughtLabel = t.assistant.thread.thoughtBriefly
     } else {
-      thoughtLabel = t.assistant.thread.thoughtFor(formatElapsed(thoughtFor))
+      thoughtLabel = t.assistant.thread.thought
     }
   }
 
@@ -374,6 +397,11 @@ const ReasoningAccordionGroup: FC<{ children?: ReactNode; endIndex: number; star
     }, undefined)
   )
 
+  // A reasoning group is the message's FIRST block when no earlier part of the
+  // message is reasoning. Only that block is exempt from the untimed label —
+  // later blocks that were never measured still say 已思考 honestly.
+  const firstOfMessage = useAuiState(s => !s.message.parts.slice(0, Math.max(0, startIndex)).some(p => p?.type === 'reasoning'))
+
   const contentKey = useAuiState(s => {
     const texts = s.message.parts
       .slice(Math.max(0, startIndex), endIndex + 1)
@@ -396,6 +424,7 @@ const ReasoningAccordionGroup: FC<{ children?: ReactNode; endIndex: number; star
     <ThinkingDisclosure
       completedAt={completedAt}
       contentKey={contentKey}
+      firstOfMessage={firstOfMessage}
       live={messageRunning && (pending || isBlockRelayed)}
       messageRunning={messageRunning}
       pending={pending}
