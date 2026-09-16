@@ -8,8 +8,9 @@ existing skills (bundled, hub, user) are modified in place. Layout:
 """
 
 import contextvars as _ctxvars
+import hashlib
 import json
-from contextlib import suppress
+from contextlib import ExitStack, suppress
 import logging
 import re
 import shutil
@@ -78,6 +79,30 @@ def _skills_dir() -> Path:
     """
     configured = Path(SKILLS_DIR)
     return configured if configured != _SKILLS_DIR_AT_IMPORT else get_hermes_home() / "skills"
+
+
+def _skill_lock_path(name: str) -> Path:
+    """Per-skill lock file under ``<skills>/.locks/`` (same idiom as the usage ledger's
+    ``.usage.json.lock``), never inside the skill dir so delete/recreate cannot unlink it under a
+    waiting writer. Keyed by a digest of the basename so ``foo`` and ``category/foo`` share one
+    lock and no name can hit a filesystem limit (callers validate the basename first)."""
+    digest = hashlib.sha256(Path(name).name.encode("utf-8", "surrogatepass")).hexdigest()
+    return _skills_dir() / ".locks" / f"{digest}.lock"
+
+
+def _skill_mutation_lock(name: str):
+    """Exclusive lock held across one skill's whole read-modify-write; thread-re-entrant."""
+    from tools.skill_usage import skill_file_lock
+    return skill_file_lock(_skill_lock_path(name))
+
+
+def _skill_mutation_locks(names):
+    """Every lock of an atomic batch, acquired in one stable path order (deadlock-free across batches)."""
+    from tools.skill_usage import skill_file_lock
+    stack = ExitStack()
+    for lock_path in sorted({_skill_lock_path(n) for n in names}):
+        stack.enter_context(skill_file_lock(lock_path))
+    return stack
 
 
 MAX_NAME_LENGTH = 64
@@ -339,7 +364,8 @@ def _guarded_write(name: str, skill_dir: Path, target: Path, action: str, label:
         if read_guard := _background_review_read_before_write_guard(name, target, action, label):
             return read_guard
         original = target.read_text(encoding="utf-8")
-    target.parent.mkdir(parents=True, exist_ok=True)
+    from hermes_constants import mkdir_under_hermes_home
+    mkdir_under_hermes_home(target.parent)
     atomic_write_text(target, content, preserve_mode=True, create_mode=0o644)
     scan_error = _security_scan_skill(skill_dir)
     if not scan_error:
@@ -396,7 +422,8 @@ def _create_skill(name: str, content: str, category: str = None) -> Dict[str, An
     if existing := _find_skill(name):
         return _err(f"A skill named '{name}' already exists at {existing['path']}.")
     skill_dir = _resolve_skill_dir(name, category)
-    skill_dir.mkdir(parents=True, exist_ok=True)
+    from hermes_constants import mkdir_under_hermes_home
+    mkdir_under_hermes_home(skill_dir)
     skill_md = skill_dir / "SKILL.md"
     atomic_write_text(skill_md, content, preserve_mode=True, create_mode=0o644)
     if scan_error := _security_scan_skill(skill_dir):
@@ -753,39 +780,47 @@ def _skill_manage_single(args: dict) -> str:
     gate_args = {k: args.get(k) for k in _SINGLE_OP_KEYS}
     if (gate_result := _apply_skill_write_gate(action, name, **gate_args)) is not None:
         return gate_result
-    # Ledger pre-capture: telemetry, not a gate — failures must NEVER block the mutation. delete
-    # destroys the whole package (consolidation may have re-homed support files first), so
-    # complete it from the newest curator backup or a restore is hollow.
-    # Audit ledger (tracker #79686 P3): capture the pre-mutation state of the skill directory so every
-    # mutation — any actor — lands in the append-only JSONL ledger with before/after blobs.
-    _ledger_before = None
-    with suppress(Exception):
-        from tools import skill_ledger as _ledger
-        _pre = _find_skill(name)
-        _ledger_before = _ledger.capture_before(
-            _pre["path"] if _pre else None, complete_package=(action == "delete"), skill=name)
     for arg, missing, message in _REQUIRED_ARGS.get(action, ()):
         if missing(args.get(arg)):
             return tool_error(message, success=False)
-    # Persisted-diff pre-capture: the handler mutates the files next, so the before-state
-    # must be read NOW (same primitive tool_progress uses for the live inline_diff event).
-    # Best-effort preview data, never a gate.
-    _diff_snapshot = None
-    with suppress(Exception):
-        from agent.display import capture_local_edit_snapshot
-        _diff_snapshot = capture_local_edit_snapshot("skill_manage", {
-            "action": action, "name": name, "category": args.get("category"),
-            "file_path": args.get("file_path")})
-    handler = _ACTION_HANDLERS.get(action, lambda a: _err(
-        f"Unknown action '{action}'. Use: create, edit, patch, delete, write_file, remove_file"))
-    result = handler({"name": name, **gate_args})
-    if isinstance(result, str):
-        return result  # tool_error JSON for argument-shape problems (patch)
-    if result.get("success"):
-        _persist_diff_in_result(_diff_snapshot, result)
-        _record_success(
-            action, name, result, file_path=args.get("file_path"), absorbed_into=args.get("absorbed_into"),
-            task_id=args.get("task_id"), session_id=args.get("session_id"), ledger_before=_ledger_before)
+    # Validate before the lock is keyed on the name, so a rejected name never touches .locks/
+    # (create takes a bare name; the other actions also accept ``category/name``).
+    if (name_err := _validate_name(name if action == "create" or not name else Path(name).name)) is not None:
+        return json.dumps(_err(name_err), ensure_ascii=False)
+    # A mutation is read-modify-write even when its action eventually delegates
+    # to a helper: guards, ledger capture, patch matching, validation, rollback,
+    # and the atomic replacement all belong to the same ownership window.
+    with _skill_mutation_lock(name):
+        # Ledger pre-capture: telemetry, not a gate — failures must NEVER block the mutation. delete
+        # destroys the whole package (consolidation may have re-homed support files first), so
+        # complete it from the newest curator backup or a restore is hollow.
+        # Audit ledger (tracker #79686 P3): capture the pre-mutation state of the skill directory so every
+        # mutation — any actor — lands in the append-only JSONL ledger with before/after blobs.
+        _ledger_before = None
+        with suppress(Exception):
+            from tools import skill_ledger as _ledger
+            _pre = _find_skill(name)
+            _ledger_before = _ledger.capture_before(
+                _pre["path"] if _pre else None, complete_package=(action == "delete"), skill=name)
+        # Persisted-diff pre-capture: the handler mutates the files next, so the before-state
+        # must be read NOW (same primitive tool_progress uses for the live inline_diff event).
+        # Best-effort preview data, never a gate.
+        _diff_snapshot = None
+        with suppress(Exception):
+            from agent.display import capture_local_edit_snapshot
+            _diff_snapshot = capture_local_edit_snapshot("skill_manage", {
+                "action": action, "name": name, "category": args.get("category"),
+                "file_path": args.get("file_path")})
+        handler = _ACTION_HANDLERS.get(action, lambda a: _err(
+            f"Unknown action '{action}'. Use: create, edit, patch, delete, write_file, remove_file"))
+        result = handler({"name": name, **gate_args})
+        if isinstance(result, str):
+            return result  # tool_error JSON for argument-shape problems (patch)
+        if result.get("success"):
+            _persist_diff_in_result(_diff_snapshot, result)
+            _record_success(
+                action, name, result, file_path=args.get("file_path"), absorbed_into=args.get("absorbed_into"),
+                task_id=args.get("task_id"), session_id=args.get("session_id"), ledger_before=_ledger_before)
     return json.dumps(result, ensure_ascii=False)
 
 

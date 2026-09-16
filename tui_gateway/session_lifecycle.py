@@ -290,7 +290,10 @@ def _finalize_session(session: dict | None, end_reason: str = "tui_close") -> No
                     # compression splits back to the reaped child, forever).
                     if _is_gateway_owned_source((db.get_session(session_id) or {}).get("source", "")):
                         _tui_owns_lifecycle = False
-                    elif _tui_owns_lifecycle:
+                    elif _tui_owns_lifecycle and not _desktop_automatic_cleanup:
+                        # Automatic Desktop cleanup (ws_orphan_reap, idle_timeout, etc.) reclaims
+                        # runtime but must not end the durable row — the conversation stays open
+                        # and resumable until the user explicitly closes or archives it.  #105588
                         db.end_session(session_id, end_reason)
                         # The probe and this stamp no longer share the registry lock (see
                         # _other_runtime_lease_guard): a lease that appeared in the gap means a
@@ -310,6 +313,10 @@ def _finalize_session(session: dict | None, end_reason: str = "tui_close") -> No
                             logger.info(
                                 "Reopened end-stamp for session %s: a sibling claimed its lease "
                                 "during the ownership window", session_id)
+    # ``_teardown_session`` follows with ``agent.close()``, whose ``_finalize_owned_session_row`` ends the row as
+    # ``agent_close`` through the agent's own handle — every spare decision above would be undone one call later.
+    if agent is not None and (_desktop_automatic_cleanup or not _tui_owns_lifecycle):
+        agent._end_session_on_close = False
     # In-flight async delegations end WITH the session (no return address left). Always interrupt by THIS live UI
     # sid; by durable session_key only when the TUI owns the lifecycle — a viewer tab must not kill gateway work.
     with contextlib.suppress(Exception):
