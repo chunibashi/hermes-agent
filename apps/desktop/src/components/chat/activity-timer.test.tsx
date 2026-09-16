@@ -2,7 +2,9 @@ import { act, render, screen } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import {
+  __clearTimerRegistriesForTests,
   __resetElapsedTimerRegistryForTests,
+  __simulateReloadFromStorageForTests,
   reasoningContentKey,
   useElapsedSeconds,
   useMeasuredDuration
@@ -19,6 +21,82 @@ function DurationProbe({ active, contentKey, timerKey }: { active: boolean; cont
 
   return <span data-testid="measured">{measured === null ? 'unknown' : measured}</span>
 }
+
+describe('useElapsedSeconds', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-01-01T00:00:00.000Z'))
+    vi.spyOn(document, 'hasFocus').mockReturnValue(true)
+    __resetElapsedTimerRegistryForTests()
+  })
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+    vi.useRealTimers()
+    __resetElapsedTimerRegistryForTests()
+  })
+
+  it('keeps elapsed time stable across remounts for the same key', () => {
+    const first = render(<Probe active timerKey="tool:abc" />)
+
+    act(() => {
+      vi.advanceTimersByTime(5_000)
+    })
+
+    expect(screen.getByTestId('elapsed').textContent).toBe('5')
+
+    first.unmount()
+
+    act(() => {
+      vi.advanceTimersByTime(3_000)
+    })
+
+    render(<Probe active timerKey="tool:abc" />)
+
+    expect(screen.getByTestId('elapsed').textContent).toBe('8')
+  })
+
+  it('counts from an explicit epoch rather than mount time', () => {
+    const mountedAt = Date.now()
+
+    act(() => {
+      vi.advanceTimersByTime(30_000)
+    })
+
+    render(<Probe active since={mountedAt + 28_000} />)
+
+    expect(screen.getByTestId('elapsed').textContent).toBe('2')
+  })
+
+  it('re-anchors when the epoch moves', () => {
+    const { rerender } = render(<Probe active since={Date.now()} />)
+
+    act(() => {
+      vi.advanceTimersByTime(10_000)
+    })
+
+    expect(screen.getByTestId('elapsed').textContent).toBe('10')
+
+    rerender(<Probe active since={Date.now()} />)
+
+    expect(screen.getByTestId('elapsed').textContent).toBe('0')
+  })
+
+  it('pauses UI ticks without focus and catches up immediately on return', () => {
+    render(<Probe active timerKey="tool:background" />)
+    vi.mocked(document.hasFocus).mockReturnValue(false)
+    window.dispatchEvent(new Event('blur'))
+
+    act(() => {
+      vi.advanceTimersByTime(5_000)
+    })
+    expect(screen.getByTestId('elapsed').textContent).toBe('0')
+
+    vi.mocked(document.hasFocus).mockReturnValue(true)
+    act(() => window.dispatchEvent(new Event('focus')))
+    expect(screen.getByTestId('elapsed').textContent).toBe('5')
+  })
+})
 
 describe('useMeasuredDuration', () => {
   beforeEach(() => {
@@ -161,7 +239,10 @@ describe('useMeasuredDuration', () => {
   it('freezes under the sealed text key when the id swap rides the same commit', () => {
     const partial = 'The user says hel'
     const sealed = 'The user says hello; I must load the persona skill first.'
-    const probe = render(<DurationProbe active contentKey={reasoningContentKey(partial)} timerKey="reasoning:live-1:0" />)
+
+    const probe = render(
+      <DurationProbe active contentKey={reasoningContentKey(partial)} timerKey="reasoning:live-1:0" />
+    )
 
     act(() => {
       vi.advanceTimersByTime(2_000)
@@ -179,5 +260,30 @@ describe('useMeasuredDuration', () => {
     render(<DurationProbe active={false} contentKey={reasoningContentKey(sealed)} timerKey="reasoning:stored-2:0" />)
 
     expect(screen.getByTestId('measured').textContent).toBe('5')
+  })
+
+  // The duration exists nowhere in the backend — only this renderer watched
+  // the block thinking. After an app restart the in-process registries are
+  // empty; the storage mirror is the ONLY recovery source, so sealed
+  // durations must be written through to it and reloaded by the next launch.
+  it('survives an app restart via the storage mirror', () => {
+    const text = 'The user says hello; I must load the persona skill first.'
+    const contentKey = reasoningContentKey(text)
+    const probe = render(<DurationProbe active contentKey={contentKey} timerKey="reasoning:live-1:0" />)
+
+    act(() => {
+      vi.advanceTimersByTime(4_000)
+    })
+
+    probe.rerender(<DurationProbe active={false} contentKey={contentKey} timerKey="reasoning:live-1:0" />)
+    probe.unmount()
+
+    // Simulated restart: memory forgets, storage survives, module re-loads.
+    __clearTimerRegistriesForTests()
+    __simulateReloadFromStorageForTests()
+
+    render(<DurationProbe active={false} contentKey={contentKey} timerKey="reasoning:stored-3001-1:0" />)
+
+    expect(screen.getByTestId('measured').textContent).toBe('4')
   })
 })

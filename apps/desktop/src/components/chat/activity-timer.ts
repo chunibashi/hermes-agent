@@ -20,7 +20,17 @@ const durationByKey = new Map<string, number>()
 // here and consulted when the id lookup misses. The key is the text's length
 // plus its tail: length changes at every streamed token (so partial blocks can
 // never collide with the final seal) while the tail stays cheap to slice.
+//
+// The mirror is also persisted (localStorage): the duration exists nowhere in
+// the backend — the turn record stores the text the model thought, never how
+// long the client watched it thinking — so a restarted app can only recover a
+// measured label from this own-window cache. This is pure renderer
+// presentation state: a machine that never watched the block has no duration
+// to show, and says so with the untimed label.
 const durationByContentKey = new Map<string, number>()
+
+const DURATIONS_STORAGE_KEY = 'hermes.thinking-durations.v1'
+const MAX_PERSISTED_DURATIONS = 800
 
 export function reasoningContentKey(text: string): string {
   const normalized = text.trim().replace(/\s+/g, ' ')
@@ -32,8 +42,67 @@ function rememberDuration(timerKey: string, seconds: number, contentKey?: string
   durationByKey.set(timerKey, seconds)
 
   if (contentKey) {
+    // Re-insert so the Map's iteration order tracks recency; the persistence
+    // slice below keeps the newest entries when the cache hits its cap.
+    durationByContentKey.delete(contentKey)
     durationByContentKey.set(contentKey, seconds)
+    persistDurations()
   }
+}
+
+function persistDurations(): void {
+  try {
+    const entries = [...durationByContentKey].slice(-MAX_PERSISTED_DURATIONS)
+
+    localStorage.setItem(DURATIONS_STORAGE_KEY, JSON.stringify(entries))
+  } catch {
+    // Storage full or unavailable (quota, private context): the in-memory
+    // registry still serves this session; only cross-restart recovery is lost.
+  }
+}
+
+function restoreDurations(): void {
+  try {
+    const raw = localStorage.getItem(DURATIONS_STORAGE_KEY)
+
+    if (!raw) {
+      return
+    }
+
+    const parsed: unknown = JSON.parse(raw)
+
+    if (!Array.isArray(parsed)) {
+      return
+    }
+
+    for (const entry of parsed) {
+      const [key, seconds] = Array.isArray(entry) ? entry : []
+
+      if (typeof key === 'string' && typeof seconds === 'number' && Number.isFinite(seconds) && seconds >= 0) {
+        durationByContentKey.set(key, seconds)
+      }
+    }
+  } catch {
+    // Corrupt or unreadable cache: start empty; seals re-populate it.
+  }
+}
+
+restoreDurations()
+
+// Test seam: forget everything currently watched in memory (both registries)
+// while leaving the storage mirror alone — the first half of a simulated app
+// restart. Pair with `__simulateReloadFromStorageForTests` for the second.
+export function __clearTimerRegistriesForTests(): void {
+  startedAtByKey.clear()
+  durationByKey.clear()
+  durationByContentKey.clear()
+}
+
+// Test seam: reload the content mirror purely from the storage mirror — the
+// restart path for a module that was already loaded once.
+export function __simulateReloadFromStorageForTests(): void {
+  durationByContentKey.clear()
+  restoreDurations()
 }
 
 function recallDuration(timerKey: string, contentKey?: string): number | undefined {
@@ -187,4 +256,11 @@ export function useMeasuredDuration(
 export function __resetElapsedTimerRegistryForTests() {
   startedAtByKey.clear()
   durationByKey.clear()
+  durationByContentKey.clear()
+
+  try {
+    localStorage.removeItem(DURATIONS_STORAGE_KEY)
+  } catch {
+    // jsdom-free environments have no storage; nothing to reset.
+  }
 }
