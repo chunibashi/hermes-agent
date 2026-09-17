@@ -3222,7 +3222,24 @@ _SESSION_DB_UNPINNED = object()
 # Only explicit suspension can replace a routed conversation.
 _AUTO_RESET_CONTEXT_NOTES = {
     "suspended": "[System note: The user's previous session was stopped and suspended. This is a fresh conversation with no prior context.]",
+    "idle": "[System note: The user's previous session was reset after inactivity. This is a fresh conversation with no prior context.]",
+    "daily": "[System note: The user's previous session was reset per the daily schedule. This is a fresh conversation with no prior context.]",
+    "resume_pending_expired": "[System note: The previous session was marked for recovery but the recovery window expired. This is a fresh conversation.]",
 }
+
+
+def _auto_reset_reason_text(reset_reason: str, policy) -> str:
+    """Human-readable cause for the user-facing auto-reset notice."""
+    if reset_reason == "suspended":
+        return "previous session was stopped or interrupted"
+    if reset_reason == "resume_pending_expired":
+        return "gateway restart recovery timed out"
+    if reset_reason == "daily":
+        return f"daily schedule at {policy.at_hour}:00"
+    hours = policy.idle_minutes // 60
+    mins = policy.idle_minutes % 60
+    duration = f"{hours}h" if not mins else f"{hours}h {mins}m" if hours else f"{mins}m"
+    return f"inactive for {duration}"
 
 
 def _write_runtime_status_quiet(**fields: Any) -> None:
