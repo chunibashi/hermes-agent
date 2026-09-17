@@ -47,14 +47,24 @@ function focusSelectedComposer() {
   const editor = host?.querySelector<HTMLElement>('[data-slot="composer-rich-input"]')
 
   if (editor && document.activeElement !== editor) {
+    // Don't steal a selection the user is holding outside the composer —
+    // if there's a non-collapsed selection whose anchor is NOT inside this
+    // editor, the user is selecting text elsewhere (e.g. in a message) and
+    // moving the mouse must not clear it.
+    const existing = window.getSelection()
+    const selectionLivesOutside =
+      existing && !existing.isCollapsed && existing.anchorNode && !editor.contains(existing.anchorNode)
+
     focusComposerInput(editor)
     const caret = carets.get(editor)
     const selection = window.getSelection()
 
     if (caret && editor.contains(caret.startContainer) && editor.contains(caret.endContainer) && selection) {
-      selection.removeAllRanges()
-      selection.addRange(caret)
-    } else {
+      if (!selectionLivesOutside) {
+        selection.removeAllRanges()
+        selection.addRange(caret)
+      }
+    } else if (!selectionLivesOutside) {
       placeCaretEnd(editor)
     }
   }
