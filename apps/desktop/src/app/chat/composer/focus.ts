@@ -426,12 +426,26 @@ export const focusComposerInput = (el: HTMLElement | null) => {
   const owner = $floatingComposerOwner.get()
   const surfaceId = el.closest<HTMLElement>('[data-composer-owner]')?.dataset.composerOwner
 
+  // Focusing a contenteditable collapses the document selection — if the user
+  // is holding ANY selection (transcript text, Ctrl+A select-all), stealing
+  // focus destroys it. This runs inside the focus retry loop too, so a
+  // selection made between the sync call and the rAF/timeout retries is
+  // protected. Check before every focus() attempt, not just once.
+  const selectionHeld = () => {
+    const selection = window.getSelection()
+    return Boolean(selection && selection.rangeCount > 0 && !selection.isCollapsed)
+  }
+
   const focus = () => {
     if (owner && (owner !== $floatingComposerOwner.get() || (surfaceId && surfaceId !== owner.id))) {
       return
     }
 
     if (!el.isConnected || isElementInHiddenPane(el) || document.activeElement === el) {
+      return
+    }
+
+    if (selectionHeld()) {
       return
     }
 

@@ -61,6 +61,16 @@ function selectionOutsideComposer(): boolean {
   return !ancestorEl?.closest('[data-slot="composer-rich-input"]')
 }
 
+/** Any live, non-collapsed selection in the document — the user is holding
+ *  text (transcript, composer text, Ctrl+A). While it exists, pointer movement
+ *  must not focus the composer: focusing a contenteditable collapses the
+ *  document selection and destroys it before any guard can run. */
+function hasLiveSelection(): boolean {
+  const selection = window.getSelection()
+
+  return Boolean(selection && selection.rangeCount > 0 && !selection.isCollapsed)
+}
+
 /** Every focus-follow branch (pointermove and focusin) funnels here, so the
  * selection guard lives at this chokepoint rather than at one call site. */
 function focusSelectedComposer() {
@@ -151,6 +161,16 @@ function trackPointer(event: PointerEvent) {
   }
 
   if (!target || (event.type === 'pointermove' && event.buttons !== 0)) {
+    return
+  }
+
+  // A pointer that is merely MOVING must never disturb a selection the user
+  // is holding. Focusing a contenteditable collapses the document selection,
+  // and by the time the focus-follow code runs its guard the selection is
+  // already gone — so check BEFORE anything can move focus or DOM. Any live
+  // non-collapsed selection anywhere in the document (Ctrl+A included, whose
+  // common ancestor is <html>/<body>) suppresses the whole hover-focus path.
+  if (event.type === 'pointermove' && hasLiveSelection()) {
     return
   }
 
