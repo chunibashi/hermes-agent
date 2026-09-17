@@ -40,8 +40,11 @@ const releasePointer = () => {
   pointerDownTarget = null
 }
 
-/** A non-collapsed selection anchored outside the composer editor is the user
- * selecting transcript text: focusing the composer must not clear it. */
+/** A non-collapsed selection that reaches OUTSIDE any composer editor is the
+ * user selecting transcript text (or Ctrl+A): focusing/swapping the composer
+ * must not touch it. Checking commonAncestorContainer (not just anchorNode)
+ * catches Ctrl+A, where the selection spans <html>/<body> regardless of which
+ * node the anchor happens to sit in. */
 function selectionOutsideComposer(): boolean {
   const selection = window.getSelection()
 
@@ -49,10 +52,13 @@ function selectionOutsideComposer(): boolean {
     return false
   }
 
-  const { anchorNode } = selection
-  const anchorEl = anchorNode instanceof Element ? anchorNode : anchorNode?.parentElement ?? null
+  const { commonAncestorContainer } = selection.getRangeAt(0)
+  const ancestorEl =
+    commonAncestorContainer instanceof Element
+      ? commonAncestorContainer
+      : commonAncestorContainer?.parentElement ?? null
 
-  return !anchorEl?.closest('[data-slot="composer-rich-input"]')
+  return !ancestorEl?.closest('[data-slot="composer-rich-input"]')
 }
 
 /** Every focus-follow branch (pointermove and focusin) funnels here, so the
