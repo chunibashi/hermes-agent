@@ -18,6 +18,9 @@ export interface TimelinePartMetadata {
    * `reasoning.available` fill semantics accumulate later blocks onto the
    * last `available` part instead of clobbering or dropping them. */
   source?: 'delta' | 'available'
+  /** Raw streamed text behind a `text` part whose MEDIA tags are already rendered,
+   * so the next delta re-renders from the source instead of the render. */
+  mediaSource?: string
 }
 
 export type ChatMessagePart = Exclude<ThreadMessageLike['content'], string>[number] & TimelinePartMetadata
