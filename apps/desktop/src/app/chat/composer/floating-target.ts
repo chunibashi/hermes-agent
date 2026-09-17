@@ -154,16 +154,16 @@ function trackPointer(event: PointerEvent) {
     return
   }
 
+  const active = document.activeElement
+
   // Commit the recipient and expose its existing editor before the very next
   // key event. Pointerover can fire on layout changes with a stationary mouse;
   // only actual movement or a click is user intent.
   const changed = $floatingComposerOwner.get()?.id !== id
 
-  if (changed) {
+  if (changed && !selectionOutsideComposer()) {
     flushSync(() => selectSurface(id))
   }
-
-  const active = document.activeElement
 
   const alreadyTyping =
     active instanceof HTMLElement &&
