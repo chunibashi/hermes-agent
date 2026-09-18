@@ -159,10 +159,21 @@ function TooltipContent({
 }: TooltipContentProps) {
   const preferred = TOOLTIP_PLACEMENTS[placement]
   const anchor = React.useContext(TooltipAnchor)
+
   const [pane, setPane] = React.useState<Element | null>(null)
 
+  // Resolve the pane boundary for collision detection. The functional-setPane
+  // guard (`current === el ? current : el`) prevents a redundant re-render
+  // while the tip is visible — that re-render was closing tips on adjacent
+  // controls (#114093).
   React.useLayoutEffect(() => {
-    setPane(boundary === 'pane' ? (anchor?.current?.closest('[data-tree-group]') ?? null) : null)
+    if (boundary !== 'pane') {
+      setPane(current => (current === null ? current : null))
+      return
+    }
+
+    const el = anchor?.current?.closest('[data-tree-group]') ?? null
+    setPane(current => (current === el ? current : el))
   }, [anchor, boundary])
 
   return (
