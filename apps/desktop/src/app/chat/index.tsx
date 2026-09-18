@@ -61,6 +61,7 @@ import { FloatingComposerSurface } from './composer/floating-surface'
 import { requestComposerInsert } from './composer/focus'
 import { droppedFileInlineRefs } from './composer/inline-refs'
 import { ComposerSurfaceProvider, useComposerScope, useComposerSurfaceId } from './composer/scope'
+import { useSelectAllGuard } from './composer/hooks/use-selectall-guard'
 import type { ChatBarState } from './composer/types'
 import { useHistoryWindow } from './history-window'
 import { type DroppedFile, partitionDroppedFiles } from './hooks/use-composer-actions'
@@ -459,6 +460,7 @@ const ChatViewContent = memo(function ChatViewContent({
   const isPrimary = view.kind === 'primary'
   const activeSessionId = useStore(view.$runtimeId)
 
+  useSelectAllGuard()
   const transcriptStoredSessionId = useStoreSelector($sessionStates, states =>
     activeSessionId ? (states[activeSessionId]?.storedSessionId ?? null) : null
   )
