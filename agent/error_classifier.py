@@ -446,6 +446,10 @@ UNSUPPORTED_PARAM_MARKERS = (
     "doesn't support", "is deprecated for this model",
     "unknown parameter", "unrecognized request argument", "unrecognized parameter",
     "invalid parameter", "extra inputs are not permitted",
+    # New-API relaykit rejects a thinking-off intent on reasoning-required models
+    # (gemini-3* on ``geminiThinkingLevel``) with this phrasing; the reaction is the same
+    # reasoning-strip retry (route default applies).
+    "cannot be disabled",
 )
 
 # Reasoning wire-field names (the profile reasoning controls minus ``verbosity``), longest first.

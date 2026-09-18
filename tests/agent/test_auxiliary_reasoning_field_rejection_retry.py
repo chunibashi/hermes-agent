@@ -22,6 +22,14 @@ _RELAY_400 = (
     "reasoning_effort', 'type': 'invalid_request_error', 'param': '', 'code': None}}"
 )
 
+# New-API relaykit: a reasoning-required model (gemini-3* on the ``geminiThinkingLevel`` path)
+# rejects a thinking-off intent with this phrasing instead of naming the parameter.
+_NEWAPI_THINKING_NOT_DISABLED_400 = (
+    "Error code: 400 - {'error': {'message': 'thinking cannot be disabled for model "
+    "\"gemini-3.5-flash-lite\" (request id: 202609181327170135582788268d9d6nWDkXJjZ)', "
+    "'type': 'new_api_error', 'param': '', 'code': 'convert_request_failed'}}"
+)
+
 
 def _custom_route_patches(client):
     return (
@@ -61,6 +69,31 @@ def test_reasoning_effort_rejection_retries_once_without_reasoning_fields(async_
     assert "reasoning_effort" not in retry
     assert "reasoning" not in (retry.get("extra_body") or {})
     assert retry["extra_body"]["response_format"] == {"type": "json_object"}  # unrelated fields survive
+    assert retry["model"] == first["model"]
+
+
+@pytest.mark.parametrize("async_mode", [False, True], ids=["sync", "async"])
+def test_newapi_thinking_not_disabled_400_retries_once_without_reasoning_fields(async_mode):
+    """New-API ``thinking cannot be disabled for model ...`` (400) → strip reasoning and retry once.
+
+    Relaykit's phrase does not name the rejected parameter (``reasoning_effort``/``reasoning``),
+    it says the ``gemini-3*`` model cannot have thinking disabled; the intent is still a
+    thinking-off request, so the strip-retry is the correct recovery (naked request succeeds).
+    """
+    client = MagicMock()
+    client.base_url = "https://relay.example/v1"
+    side_effect = [RuntimeError(_NEWAPI_THINKING_NOT_DISABLED_400), {"ok": True}]
+    client.chat.completions.create = AsyncMock(side_effect=side_effect) if async_mode else MagicMock(side_effect=side_effect)
+
+    assert _call(async_mode, client) == {"ok": True}
+
+    calls = client.chat.completions.create.call_args_list
+    assert len(calls) == 2
+    first, retry = calls[0].kwargs, calls[1].kwargs
+    assert first["reasoning_effort"] == "none"
+    assert "reasoning_effort" not in retry
+    assert "reasoning" not in (retry.get("extra_body") or {})
+    assert retry["extra_body"]["response_format"] == {"type": "json_object"}
     assert retry["model"] == first["model"]
 
 
