@@ -234,6 +234,16 @@ function trackFocus(event: FocusEvent) {
     return
   }
 
+  // A live, non-collapsed selection anywhere in the document means the user
+  // is selecting text (transcript, Ctrl+A). Focus that arrives while such a
+  // selection exists — e.g. the context menu's portal stealing focus after a
+  // right-click, or a Radix layer opening — must not redirect into the
+  // composer: redirecting focuses a contenteditable, which collapses and
+  // destroys the selection. Match the pointermove guard here.
+  if (hasLiveSelection()) {
+    return
+  }
+
   const hostId = target.closest<HTMLElement>('[data-composer-owner]')?.dataset.composerOwner
 
   if (hostId === $floatingComposerOwner.get()?.id) {

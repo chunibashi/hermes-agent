@@ -9,37 +9,34 @@
  * Capture-phase intercept: if focus is NOT already in an editable field when
  * Ctrl+A fires, prevent the default focus-shift and run selectAll manually.
  *
- * The manual select maps to the SAME semantic as the native command: it
- * selects the selectable text content of the document. It must NOT use
- * selectAllChildren(document.body) — that range includes every `user-select:
- * none` chrome node (sidebar, hidden tabs, the floating composer host), and
- * Chromium treats a "copy" of such a range as empty/failed. Instead, select
- * child-BY-child, walking text nodes and skipping non-selectable ones: the
- * selection then contains exactly what the native Ctrl+A would have selected
- * (message bodies, code blocks), and Ctrl+C / right-click Copy works.
+ * The manual select maps to the SAME semantic as the native command:
+ *
+ * - it selects a SINGLE range whose boundaries sit on text nodes (the first
+ *   and last selectable text node), spanning everything between — this is
+ *   what Chromium's own Ctrl+A produces, and it is what Ctrl+C / right-click
+ *   Copy can serialize. A range that starts/ends on an ELEMENT node (as
+ *   `selectAllChildren(document.body)` produces) makes Chromium treat the
+ *   copy as empty/failed.
+ * - selectability is read from each text node's parent computed style —
+ *   `getComputedStyle` already folds in user-select propagation, so chrome
+ *   (sidebar, buttons, rails, hidden tabs, the floating composer host) is
+ *   excluded exactly as native select-all excludes it, WITHOUT walking the
+ *   ancestor chain (that walk would wrongly hit body's user-select:none).
  */
 import { useEffect } from 'react'
 
-/** True when the element (or its subtree) is not opted out of selection. */
-function isSelectableElement(el: Element | null): boolean {
-  if (!el) {
+/** True when the text node's parent is not opted out of selection. */
+function isSelectableTextNode(text: Text): boolean {
+  const parent = text.parentElement
+
+  if (!parent || !text.textContent) {
     return false
   }
 
-  let node: Element | null = el
+  const style = window.getComputedStyle(parent)
+  const userSelect = style.userSelect || style.webkitUserSelect || ''
 
-  while (node) {
-    const style = window.getComputedStyle(node)
-    const userSelect = style.userSelect || style.webkitUserSelect || ''
-
-    if (userSelect === 'none') {
-      return false
-    }
-
-    node = node.parentElement
-  }
-
-  return true
+  return userSelect !== 'none'
 }
 
 /** Select the document's selectable text — the native Ctrl+A equivalent. */
@@ -51,19 +48,15 @@ function selectAllSelectable(): void {
   }
 
   const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT)
-  const ranges: Range[] = []
+  const selectable: Text[] = []
 
   let node: Node | null = walker.nextNode()
 
   while (node) {
     const text = node as Text
-    const parent = text.parentElement
 
-    if (text.textContent && isSelectableElement(parent)) {
-      const range = document.createRange()
-      range.setStart(text, 0)
-      range.setEnd(text, text.textContent.length)
-      ranges.push(range)
+    if (isSelectableTextNode(text)) {
+      selectable.push(text)
     }
 
     node = walker.nextNode()
@@ -71,15 +64,25 @@ function selectAllSelectable(): void {
 
   selection.removeAllRanges()
 
-  for (const range of ranges) {
-    selection.addRange(range)
-  }
-
-  if (selection.rangeCount === 0) {
+  if (selectable.length === 0) {
     // No selectable text at all — fall back to the whole document so the
     // keyboard gesture still does something visible.
     selection.selectAllChildren(document.body)
+
+    return
   }
+
+  // One contiguous range from the first selectable text node to the last.
+  // Text-node boundaries keep the selection serializable by Chromium's copy
+  // pipeline; intermediate non-selectable nodes are fine (native Ctrl+A
+  // includes them in the range too, copying only the selectable text).
+  const first = selectable[0]
+  const last = selectable[selectable.length - 1]
+  const range = document.createRange()
+
+  range.setStart(first, 0)
+  range.setEnd(last, last.textContent?.length ?? 0)
+  selection.addRange(range)
 }
 
 export function useSelectAllGuard(): void {
