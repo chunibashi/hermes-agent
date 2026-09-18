@@ -148,7 +148,11 @@ function trackPointer(event: PointerEvent) {
   const target = event.target instanceof Element ? event.target : null
 
   if (event.type === 'pointerdown') {
-    pointerDownTarget = target
+    // Right-click (button 2) must not count as a navigation gesture: it opens
+    // the context menu, and the resulting focusin would route through the
+    // pointerDownTarget branch of trackFocus, swapping surfaces and clearing
+    // the user's selection. Only a primary press arms the pointer-down path.
+    pointerDownTarget = event.button === 0 ? target : null
     keyboardNavigation = false
   } else {
     if (pointer?.x === event.clientX && pointer.y === event.clientY) {
