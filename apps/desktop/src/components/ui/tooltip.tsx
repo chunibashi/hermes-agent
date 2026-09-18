@@ -139,8 +139,6 @@ function TooltipTrigger({ onFocus, ...props }: React.ComponentProps<typeof Toolt
 
 interface TooltipContentProps extends React.ComponentProps<typeof TooltipPrimitive.Content> {
   placement?: TooltipPlacement
-  /** Row descriptions may extend beyond a pane; local controls stay inside. */
-  boundary?: 'pane' | 'viewport'
 }
 
 function TooltipContent({
@@ -152,29 +150,11 @@ function TooltipContent({
   collisionPadding = 12,
   hideWhenDetached = true,
   placement = 'control',
-  boundary = placement === 'control' || placement === 'toolbar' ? 'pane' : 'viewport',
   side,
   sideOffset = 5,
   ...props
 }: TooltipContentProps) {
   const preferred = TOOLTIP_PLACEMENTS[placement]
-  const anchor = React.useContext(TooltipAnchor)
-
-  const [pane, setPane] = React.useState<Element | null>(null)
-
-  // Resolve the pane boundary for collision detection. The functional-setPane
-  // guard (`current === el ? current : el`) prevents a redundant re-render
-  // while the tip is visible — that re-render was closing tips on adjacent
-  // controls (#114093).
-  React.useLayoutEffect(() => {
-    if (boundary !== 'pane') {
-      setPane(current => (current === null ? current : null))
-      return
-    }
-
-    const el = anchor?.current?.closest('[data-tree-group]') ?? null
-    setPane(current => (current === el ? current : el))
-  }, [anchor, boundary])
 
   return (
     <TooltipPrimitive.Portal>
@@ -185,7 +165,7 @@ function TooltipContent({
           'tooltip-bubble pointer-events-none z-(--z-over-modal) w-fit select-none bg-foreground px-2 py-1 text-[0.6875rem] font-medium leading-[1.4] text-background',
           className
         )}
-        collisionBoundary={collisionBoundary ?? pane ?? undefined}
+        collisionBoundary={collisionBoundary}
         collisionPadding={collisionPadding}
         data-slot="tooltip-content"
         hideWhenDetached={hideWhenDetached}

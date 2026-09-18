@@ -66,7 +66,7 @@ describe('tooltip placement', () => {
     expect(latestContent()).toMatchObject({ side: 'bottom', align: 'end', collisionPadding: 20 })
   })
 
-  it('uses the owning pane for a control without changing its trigger', () => {
+  it('renders a control with the trigger in its pane', () => {
     render(
       <div data-testid="pane" data-tree-group="test-pane">
         <Tip label="Details">
@@ -75,7 +75,7 @@ describe('tooltip placement', () => {
       </div>
     )
 
-    expect(latestContent().collisionBoundary).toBe(screen.getByTestId('pane'))
+    expect(latestContent().collisionBoundary).toBeUndefined()
     expect(screen.getByRole('button').parentElement).toBe(screen.getByTestId('pane'))
   })
 
