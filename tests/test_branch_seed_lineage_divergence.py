@@ -232,3 +232,48 @@ class TestBranchSeedLineageDivergence:
             "the assistant run should be preserved in full, not truncated "
             f"at the first row: got {[m['role'] for m in truncated]}"
         )
+
+    def test_row_id_for_an_even_row_is_dropped_from_visible_projection(
+        self, db: SessionDB
+    ) -> None:
+        """Clicking the FIRST message addresses a row that exists in the raw
+        lineage but is filtered from the visible projection (an empty assistant
+        row before the first real reply). session.branch must locate the clicked
+        row via the UNFILTERED projection and cut to the last visible row that
+        precedes it, not silently return the whole transcript (2026-09-19).
+        """
+        db.create_session("sess3", source="test")
+        db.append_message("sess3", role="user", content="q1")
+        db.append_message("sess3", role="assistant", content="")  # empty turn marker
+        db.append_message("sess3", role="assistant", content="the real answer")
+        db.append_message("sess3", role="user", content="q2")
+        db.append_message("sess3", role="assistant", content="a2")
+
+        from tui_gateway.methods_session import _last_visible_index_before  # noqa: PLC0415
+
+        _, raw_history = db.get_resume_conversations("sess3")
+        empty_row_id = raw_history[1]["_row_id"]  # the empty assistant row
+        assert raw_history[1].get("content", "").strip() == ""
+
+        # Apply the same filtering as _visible_branch_history (kept inline, as
+        # in test_row_id_cut_extends_through_consecutive_assistant_rows: the
+        # module symbol resolves only under server assembly, not a bare import).
+        visible = []
+        for m in raw_history:
+            if m.get("role") not in {"user", "assistant"}:
+                continue
+            if not str(m.get("content", "") or "").strip():
+                continue
+            visible.append(dict(m))
+        assert not any(m.get("_row_id") == empty_row_id for m in visible), (
+            "the empty assistant row is filtered from the visible projection"
+        )
+
+        raw_cut = next(i for i, m in enumerate(raw_history) if m.get("_row_id") == empty_row_id)
+        cut = _last_visible_index_before(raw_history, visible, raw_cut)
+        assert cut is not None
+        # Only the rows BEFORE the clicked empty row survive — i.e. the first user turn.
+        assert [m["role"] for m in visible[: cut + 1]] == ["user"], (
+            "branch should keep only the turns preceding the clicked row, "
+            f"not the whole transcript: got {[m['role'] for m in visible[: cut + 1]]}"
+        )

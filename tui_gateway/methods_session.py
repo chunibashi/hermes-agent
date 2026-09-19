@@ -1972,21 +1972,45 @@ _BRANCH_COPY_FIELDS = (
     "timestamp")
 
 
-def _branch_source_history(db, session: dict, old_key: str) -> list:
-    """Rows a branch copies: the persisted DISPLAY projection reconciled with live memory (live history is
-    the MODEL projection — post-compaction summary + tail — the child would lose every archived turn)."""
+def _branch_source_history(db, session: dict, old_key: str) -> tuple:
+    """``(visible_history, raw_history)`` a branch copies. ``visible_history`` is the DISPLAY projection
+    reconciled with live memory (live history is the MODEL projection — post-compaction summary + tail — the
+    child would lose every archived turn) filtered to user/assistant rows with text. ``raw_history`` is the
+    same projection BEFORE the visibility filter, so a ``row_id`` that points at a row the filter drops (an
+    empty/tool row) can still be located for row-address truncation instead of silently widening the branch."""
     with session["history_lock"]:
         in_memory_history = [
             dict(msg) for msg in list(session.get("display_history_prefix") or []) + list(session.get("history", []))
             if isinstance(msg, dict)]
-    history = None
+    raw_history = None
     if callable(get_resume_conversations := getattr(db, "get_resume_conversations", None)):
         try:
             _, display_history = get_resume_conversations(old_key)
-            history = _visible_branch_history(_reconcile_display_with_live(display_history, in_memory_history))
+            raw_history = _reconcile_display_with_live(display_history, in_memory_history) or []
+            history = _visible_branch_history(raw_history)
         except Exception:
             logger.debug("branch display projection read failed", exc_info=True)
-    return history or _visible_branch_history(in_memory_history)
+    if history is None:
+        in_memory = _visible_branch_history(in_memory_history)
+        return in_memory, list(in_memory)
+    return list(history), list(raw_history or history)
+
+
+def _last_visible_index_before(raw_history: list, visible_history: list, raw_cut: int):
+    """Index into ``visible_history`` of the last visible row whose position in
+    ``raw_history`` is strictly before ``raw_cut`` (the ``raw_history`` index of the
+    clicked row that _visible_branch_history dropped). Returns ``None`` when no
+    visible row precedes the click, so the caller can fall through to count."""
+    cut = None
+    for idx, message in enumerate(visible_history):
+        message_row_id = message.get("_row_id")
+        raw_idx = next((i for i, raw in enumerate(raw_history)
+                        if raw.get("_row_id") == message_row_id), -1)
+        if raw_idx >= 0 and raw_idx < raw_cut:
+            cut = idx
+        else:
+            break
+    return cut
 
 
 @_session_method("session.branch", live=True)
@@ -1996,7 +2020,7 @@ def _(rid, params: dict, session: dict) -> dict:
         if db is None:
             return _db_unavailable_error(rid, code=5008)
         old_key = session["session_key"]
-        history = _branch_source_history(db, session, old_key)
+        history, raw_history = _branch_source_history(db, session, old_key)
         if not history:
             return _err(rid, 4008, "nothing to branch — send a message first")
         # Branch-point selection: prefer the clicked message's durable row id
@@ -2014,6 +2038,21 @@ def _(rid, params: dict, session: dict) -> dict:
                 if message.get("_row_id") == branch_point_row_id:
                     cut = idx
                     break
+            if cut is None:
+                # The clicked row is absent from the VISIBLE projection — e.g.
+                # it is an empty/tool row that _visible_branch_history drops,
+                # yet the frontend still addresses it as the merge's first
+                # row. Locate it in the UNFILTERED projection and cut at the
+                # last visible row that precedes it, so the branch still
+                # starts where the user clicked instead of silently widening
+                # to the whole transcript.
+                raw_cut = None
+                for idx, message in enumerate(raw_history):
+                    if message.get("_row_id") == branch_point_row_id:
+                        raw_cut = idx
+                        break
+                if raw_cut is not None:
+                    cut = _last_visible_index_before(raw_history, history, raw_cut)
             if cut is not None:
                 # The frontend merges a turn's consecutive assistant rows into
                 # one ChatMessage whose row_id is the FIRST row of the merge.
@@ -2023,10 +2062,10 @@ def _(rid, params: dict, session: dict) -> dict:
                     cut += 1
                 history = history[: cut + 1]
             else:
-                # The clicked row was filtered out of this projection (e.g. it
-                # is a tool/empty row that _visible_branch_history drops) —
-                # fall back to the count so a stray row_id can't silently
-                # widen the branch to the whole transcript.
+                # Neither projection carries the clicked row (e.g. it was
+                # dropped by the DB read itself) — fall back to the count so a
+                # stray row_id can't silently widen the branch to the whole
+                # transcript.
                 count = params.get("count")
                 if isinstance(count, int) and count > 0:
                     history = history[:count]
