@@ -343,6 +343,7 @@ method("session.close", params=SessionCloseParams, result=SessionCloseResult,
 class SessionBranchParams(SessionParams):
     name: str | None = None
     count: int | None = None  # keep only the first N rows of the source history
+    row_id: int | None = None  # cut the lineage at the clicked message's durable row id (preferred over count)
 
 
 class SessionBranchResult(Result):
