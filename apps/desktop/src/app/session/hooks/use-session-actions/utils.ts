@@ -29,6 +29,7 @@ import {
   setCurrentPersonality,
   setCurrentProvider,
   setCurrentReasoningEffort,
+  setCurrentReasoningEffortWire,
   setCurrentServiceTier,
   setCurrentUsage,
   setMessagingSessions,
@@ -1709,7 +1710,16 @@ export async function resolveSessionOwner(storedSessionId: null | string): Promi
 type SessionRuntimeStatePatch = Partial<
   Pick<
     ClientSessionState,
-    'branch' | 'cwd' | 'fast' | 'model' | 'personality' | 'provider' | 'reasoningEffort' | 'serviceTier' | 'yolo'
+    | 'branch'
+    | 'cwd'
+    | 'fast'
+    | 'model'
+    | 'personality'
+    | 'provider'
+    | 'reasoningEffort'
+    | 'reasoningEffortWire'
+    | 'serviceTier'
+    | 'yolo'
   >
 >
 
@@ -1763,6 +1773,10 @@ function publishRuntimeToComposer(state: SessionRuntimeStatePatch): void {
 
   if (state.reasoningEffort !== undefined) {
     setCurrentReasoningEffort(state.reasoningEffort)
+  }
+
+  if (state.reasoningEffortWire !== undefined) {
+    setCurrentReasoningEffortWire(state.reasoningEffortWire)
   }
 
   if (state.serviceTier !== undefined) {
@@ -1827,6 +1841,10 @@ export function applyRuntimeInfo(
 
   if (typeof info.reasoning_effort === 'string') {
     sessionState.reasoningEffort = info.reasoning_effort
+  }
+
+  if (typeof info.reasoning_effort_wire === 'string') {
+    sessionState.reasoningEffortWire = info.reasoning_effort_wire
   }
 
   if (typeof info.service_tier === 'string') {
