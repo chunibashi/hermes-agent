@@ -87,31 +87,59 @@ function selectAllSelectable(): void {
 
 export function useSelectAllGuard(): void {
   useEffect(() => {
+    // The composer's hover-focus returns focus to the input after the user
+    // clicks anywhere in the transcript, so `document.activeElement` alone
+    // cannot tell "user is editing" from "user clicked a message and
+    // focus-follow yanked the caret back into the input". Track the last
+    // pointer gesture: Ctrl+A after clicking a message must select the
+    // document, not the input's own content; Ctrl+A while the user's last
+    // gesture was inside the input (or they are typing) keeps the native
+    // editable select-all.
+    let lastPointerInComposer = true
+
+    const onPointerDown = (event: PointerEvent) => {
+      const target = event.target instanceof Element ? event.target : null
+      lastPointerInComposer = Boolean(target?.closest('[data-slot="composer-rich-input"]'))
+    }
+
     const onKeyDown = (event: KeyboardEvent) => {
-      if (!((event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey && event.key.toLowerCase() === 'a')) {
-        return
-      }
+      const isSelectAll =
+        (event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey && event.key.toLowerCase() === 'a'
 
       const active = document.activeElement
       const inEditable =
         active instanceof HTMLElement &&
         (active.isContentEditable || active.tagName === 'INPUT' || active.tagName === 'TEXTAREA')
 
-      if (inEditable) {
+      if (!isSelectAll) {
+        // Any other keystroke while the input holds focus means the user is
+        // actively editing it; the next Ctrl+A selects the input's own
+        // content (the native behavior).
+        if (inEditable) {
+          lastPointerInComposer = true
+        }
+
         return
       }
 
-      // Focus is in the transcript (or nowhere editable) — block Chromium's
-      // auto-focus into the composer and select the text content directly.
+      if (inEditable && lastPointerInComposer) {
+        return
+      }
+
+      // Focus is in the transcript (or the user just clicked there and
+      // hover-focus stole it back) — block Chromium's auto-focus into the
+      // composer and select the text content directly.
       event.preventDefault()
       event.stopImmediatePropagation()
 
       selectAllSelectable()
     }
 
+    document.addEventListener('pointerdown', onPointerDown, true)
     document.addEventListener('keydown', onKeyDown, true)
 
     return () => {
+      document.removeEventListener('pointerdown', onPointerDown, true)
       document.removeEventListener('keydown', onKeyDown, true)
     }
   }, [])
