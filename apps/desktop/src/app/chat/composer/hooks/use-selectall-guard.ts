@@ -95,7 +95,11 @@ export function useSelectAllGuard(): void {
     // document, not the input's own content; Ctrl+A while the user's last
     // gesture was inside the input (or they are typing) keeps the native
     // editable select-all.
-    let lastPointerInComposer = true
+    //
+    // Starts false (browser semantics: Ctrl+A selects the page). Only a click
+    // INSIDE the input, or typing, flips it — hover-focus moving the caret
+    // into the composer is not a user gesture and must not flip it.
+    let lastPointerInComposer = false
 
     const onPointerDown = (event: PointerEvent) => {
       const target = event.target instanceof Element ? event.target : null
@@ -112,10 +116,14 @@ export function useSelectAllGuard(): void {
         (active.isContentEditable || active.tagName === 'INPUT' || active.tagName === 'TEXTAREA')
 
       if (!isSelectAll) {
-        // Any other keystroke while the input holds focus means the user is
-        // actively editing it; the next Ctrl+A selects the input's own
-        // content (the native behavior).
-        if (inEditable) {
+        // A keystroke while the input holds focus means the user is actively
+        // editing it — the next Ctrl+A selects the input's own content (the
+        // native behavior). EXCEPT command chords (Ctrl/Meta/Alt held): the
+        // bare modifier keydown fires BEFORE the chord's letter, and treating
+        // that as "editing" would clobber the pointer-gesture record — the
+        // user who clicked a message, then pressed Ctrl+A, would lose the
+        // "clicked outside" signal and get the input selected instead.
+        if (inEditable && !event.ctrlKey && !event.metaKey && !event.altKey) {
           lastPointerInComposer = true
         }
 
