@@ -2393,8 +2393,17 @@ export function useSessionActions({
         // unconditionally). resumeSession reuses the runtime warm-cached above
         // (ensureSessionState/updateSessionState) instead of an extra resume RPC.
         if (parentStoredId !== null && selectedStoredSessionIdRef.current === parentStoredId) {
-          navigate(sessionRoute(routedSessionId), { replace: true })
+          // Resume BEFORE navigating the address bar: resumeSession captures
+          // getRouteToken() at entry and bails via isCurrentResume() when the
+          // route changes mid-await. navigate() schedules a location update
+          // that React only commits after the current task yields, so calling
+          // it first makes the resume see a stale routeToken and return early
+          // — the branch's warm-cached 11 rows never stage to the view
+          // (syncSessionStateToView only stages for the active runtime), and
+          // the pane keeps showing the parent's full transcript under the new
+          // branch route ("branch shows the whole conversation").
           await resumeSession(routedSessionId)
+          navigate(sessionRoute(routedSessionId), { replace: true })
         } else {
           // Carry the exact owner onto the tile: its persisted ownerRoute is
           // what pins the owning backend's socket in the gateway keep-set

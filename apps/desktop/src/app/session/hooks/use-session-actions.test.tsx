@@ -1837,14 +1837,17 @@ describe('session.resume turn timer contract', () => {
 
 function BranchHarness({
   activeSessionId = null,
+  getRouteToken = () => 'token',
   navigate = vi.fn(),
   onCurrentReady,
   onReady,
   onRefs,
   requestGateway,
-  selectedStoredSessionId = null
+  selectedStoredSessionId = null,
+  syncSessionStateToView = vi.fn()
 }: {
   activeSessionId?: string | null
+  getRouteToken?: () => string
   navigate?: ReturnType<typeof vi.fn>
   onCurrentReady?: (branchCurrentSession: (messageId?: string) => Promise<boolean>) => void
   onReady: (branchStoredSession: (storedSessionId: string, sessionProfile?: string | null) => Promise<boolean>) => void
@@ -1854,6 +1857,7 @@ function BranchHarness({
   }) => void
   requestGateway: <T>(method: string, params?: Record<string, unknown>) => Promise<T>
   selectedStoredSessionId?: string | null
+  syncSessionStateToView?: (sessionId: string, state: ClientSessionState) => void
 }) {
   const ref = <T,>(value: T): MutableRefObject<T> => ({ current: value })
   const activeSessionIdRef = ref<string | null>(activeSessionId)
@@ -1867,7 +1871,7 @@ function BranchHarness({
     busyRef: ref(false),
     creatingSessionRef: ref(false),
     ensureSessionState: () => ({}) as ClientSessionState,
-    getRouteToken: () => 'token',
+    getRouteToken,
     getRoutedStoredSessionId: () => null,
     navigate: navigate as never,
     requestGateway,
@@ -1876,7 +1880,7 @@ function BranchHarness({
     selectedStoredSessionId,
     selectedStoredSessionIdRef,
     sessionStateByRuntimeIdRef: ref(new Map<string, ClientSessionState>()),
-    syncSessionStateToView: vi.fn(),
+    syncSessionStateToView,
     updateSessionState: () => ({}) as ClientSessionState
   })
 
@@ -2239,6 +2243,64 @@ describe('branchStoredSession desktop source tagging', () => {
     // message), no count means the backend returns the full transcript —
     // safer than amputating with a wrong count.
     expect(branchParams).toEqual({ session_id: 'live-parent' })
+  })
+
+  it('resumes the branch (flipping selection to it) BEFORE navigating, so the route flips with the view already staged', async () => {
+    // Regression: forkBranch used to navigate() BEFORE awaiting resumeSession.
+    // navigate() only schedules the location update (React commits it after
+    // the current task yields), so resumeSession captured the PARENT's
+    // routeToken at entry and its isCurrentResume() check bailed when the
+    // route flipped mid-await. The branch's warm-cached rows never staged to
+    // the view and the pane kept showing the parent's full transcript under
+    // the new branch route (“branch shows the whole conversation”).
+    // Resume first: resumeSession synchronously flips selection to the branch
+    // at entry, and the address bar flips only afterwards.
+    const navigate = vi.fn(() => {
+      expect($selectedStoredSessionId.get()).toBe('branch-stored')
+    })
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      if (method === 'session.branch') {
+        expect(params).toEqual({ session_id: 'live-parent' })
+
+        return {
+          session_id: 'branch-runtime',
+          stored_session_id: 'branch-stored',
+          title: 'Branch',
+          message_count: 2,
+          messages: [
+            { role: 'user', text: 'question one', row_id: 10 },
+            { role: 'assistant', text: 'answer one', row_id: 11 }
+          ],
+          info: {}
+        } as never
+      }
+
+      return {} as never
+    })
+
+    setMessages([
+      { id: 'q1', role: 'user', parts: [{ type: 'text', text: 'question one' }] },
+      { id: 'a1', role: 'assistant', parts: [{ type: 'text', text: 'answer one' }] }
+    ])
+
+    let branchCurrentSession: ((messageId?: string) => Promise<boolean>) | null = null
+    render(
+      <BranchHarness
+        activeSessionId="live-parent"
+        navigate={navigate}
+        onCurrentReady={branch => (branchCurrentSession = branch)}
+        onReady={() => undefined}
+        requestGateway={requestGateway}
+        selectedStoredSessionId="stored-parent"
+      />
+    )
+    await waitFor(() => expect(branchCurrentSession).not.toBeNull())
+
+    await expect(branchCurrentSession!('a1')).resolves.toBe(true)
+
+    expect(navigate).toHaveBeenCalledTimes(1)
+    expect(navigate).toHaveBeenCalledWith(sessionRoute('branch-stored'), { replace: true })
   })
 
   it('hydrates the complete persisted display transcript before branching a compacted live chat', async () => {
