@@ -17,72 +17,109 @@
  *   Copy can serialize. A range that starts/ends on an ELEMENT node (as
  *   `selectAllChildren(document.body)` produces) makes Chromium treat the
  *   copy as empty/failed.
- * - selectability is read from each text node's parent computed style —
- *   `getComputedStyle` already folds in user-select propagation, so chrome
- *   (sidebar, buttons, rails, hidden tabs, the floating composer host) is
- *   excluded exactly as native select-all excludes it, WITHOUT walking the
- *   ancestor chain (that walk would wrongly hit body's user-select:none).
+ * - the traversal is bounded to MESSAGE containers inside the user's current
+ *   chat surface. Every tab stays mounted (keep-alive) and hidden surfaces
+ *   remain in the DOM, so walking `document.body` would burn thousands of
+ *   `getComputedStyle` calls per keypress AND could anchor the range inside
+ *   an invisible surface. Message containers are the `user-select: text`
+ *   regions by CSS contract; chrome (sidebar, rails, hidden tabs, the
+ *   floating composer host) is excluded exactly as native select-all
+ *   excludes it.
  */
 import { useEffect } from 'react'
 
-/** True when the text node's parent is not opted out of selection. */
-function isSelectableTextNode(text: Text): boolean {
-  const parent = text.parentElement
+/** Containers whose text is selectable by CSS contract (styles.css). */
+const MESSAGE_SELECTOR = [
+  '[data-slot="aui_user-message-root"]',
+  '[data-slot="aui_assistant-message-content"]',
+  '[data-slot="aui_system-message-root"]',
+  '[data-selectable-text="true"]',
+].join(', ')
 
-  if (!parent || !text.textContent) {
-    return false
-  }
-
-  const style = window.getComputedStyle(parent)
-  const userSelect = style.userSelect || style.webkitUserSelect || ''
-
-  return userSelect !== 'none'
-}
-
-/** Select the document's selectable text — the native Ctrl+A equivalent. */
-function selectAllSelectable(): void {
-  const selection = window.getSelection()
-
-  if (!selection) {
-    return
-  }
-
-  const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT)
-  const selectable: Text[] = []
+/** First text node inside `el`, or null when the subtree has no text. */
+function firstTextNode(el: Element): Text | null {
+  const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT)
 
   let node: Node | null = walker.nextNode()
 
   while (node) {
     const text = node as Text
 
-    if (isSelectableTextNode(text)) {
-      selectable.push(text)
+    if (text.textContent?.trim()) {
+      return text
     }
 
     node = walker.nextNode()
   }
 
-  selection.removeAllRanges()
+  return null
+}
 
-  if (selectable.length === 0) {
-    // No selectable text at all — fall back to the whole document so the
-    // keyboard gesture still does something visible.
-    selection.selectAllChildren(document.body)
+/** Last text node inside `el`, or null when the subtree has no text. */
+function lastTextNode(el: Element): Text | null {
+  const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT)
+
+  let last: Text | null = null
+  let node: Node | null = walker.nextNode()
+
+  while (node) {
+    const text = node as Text
+
+    if (text.textContent?.trim()) {
+      last = text
+    }
+
+    node = walker.nextNode()
+  }
+
+  return last
+}
+
+/**
+ * Select the current surface's message text — the native Ctrl+A equivalent.
+ *
+ * The range runs from the first text node of the FIRST message container to
+ * the last text node of the LAST one (document order). Intermediate UI
+ * (timestamps, action bars) is included in the range exactly like native
+ * select-all includes it; Chromium copies only the selectable text.
+ */
+function selectAllSelectable(root: Element): void {
+  const selection = window.getSelection()
+
+  if (!selection) {
+    return
+  }
+
+  const containers = root.querySelectorAll<Element>(MESSAGE_SELECTOR)
+
+  if (containers.length === 0) {
+    selection.removeAllRanges()
+    selection.selectAllChildren(root)
 
     return
   }
 
-  // One contiguous range from the first selectable text node to the last.
-  // Text-node boundaries keep the selection serializable by Chromium's copy
-  // pipeline; intermediate non-selectable nodes are fine (native Ctrl+A
-  // includes them in the range too, copying only the selectable text).
-  const first = selectable[0]
-  const last = selectable[selectable.length - 1]
+  const first = firstTextNode(containers[0])
+  const last = lastTextNode(containers[containers.length - 1])
+
+  selection.removeAllRanges()
+
+  if (!first || !last) {
+    selection.selectAllChildren(root)
+
+    return
+  }
+
   const range = document.createRange()
 
   range.setStart(first, 0)
   range.setEnd(last, last.textContent?.length ?? 0)
   selection.addRange(range)
+}
+
+/** The chat surface a given element belongs to, or null. */
+function surfaceOf(el: Element | null): Element | null {
+  return el?.closest('[data-chat-surface]') ?? null
 }
 
 export function useSelectAllGuard(): void {
@@ -96,13 +133,20 @@ export function useSelectAllGuard(): void {
     // gesture was inside the input (or they are typing) keeps the native
     // editable select-all.
     //
-    // Starts false (browser semantics: Ctrl+A selects the page). Only a click
-    // INSIDE the input, or typing, flips it — hover-focus moving the caret
-    // into the composer is not a user gesture and must not flip it.
-    let lastPointerInComposer = false
+    // Starts true when the input already holds focus at mount (hover-focus
+    // default): a user who never clicked anywhere gets the native editable
+    // select-all, matching where the caret already sits. Only a click
+    // OUTSIDE the input flips it; hover-focus moving the caret into the
+    // composer is not a user gesture and must not flip it.
+    let lastPointerInComposer = document.activeElement?.closest?.('[data-slot="composer-rich-input"]') !== null
+    // The surface the last pointer gesture landed in — the select-all scope.
+    // Null until the first pointerdown; resolved lazily at keypress.
+    let lastPointerSurface: Element | null = surfaceOf(document.activeElement)
 
     const onPointerDown = (event: PointerEvent) => {
       const target = event.target instanceof Element ? event.target : null
+
+      lastPointerSurface = surfaceOf(target)
       lastPointerInComposer = Boolean(target?.closest('[data-slot="composer-rich-input"]'))
     }
 
@@ -140,7 +184,12 @@ export function useSelectAllGuard(): void {
       event.preventDefault()
       event.stopImmediatePropagation()
 
-      selectAllSelectable()
+      const root =
+        lastPointerSurface ??
+        document.querySelector('[data-chat-surface]:not([data-chat-unfocused])') ??
+        document.body
+
+      selectAllSelectable(root)
     }
 
     document.addEventListener('pointerdown', onPointerDown, true)
