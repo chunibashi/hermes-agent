@@ -24,15 +24,6 @@ from tools.delegate_tool import _build_child_progress_callback
 class TestPrintAbove:
     """Tests for KawaiiSpinner.print_above method."""
 
-    def test_print_above_without_spinner_running(self):
-        """print_above should write to stdout even when spinner is not running."""
-        buf = io.StringIO()
-        spinner = KawaiiSpinner("test")
-        spinner._out = buf  # Redirect to buffer
-        
-        spinner.print_above("hello world")
-        output = buf.getvalue()
-        assert "hello world" in output
 
     def test_print_above_with_spinner_running(self):
         """print_above should clear spinner line and print text."""

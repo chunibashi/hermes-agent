@@ -29,10 +29,11 @@ export function isFileEditTool(toolName: string): boolean {
 //   - `skill_manage` mutates the user's skills and the gateway renders the
 //     change as an inline diff (agent/display.py treats it like a file edit),
 //     so the edit is a deliverable the user reviews, not scaffolding.
+//   - `manage_catalog` is a consent card; its controls must stay visible.
 //
 // Everything else is ephemeral activity — reads, searches, commands — which is
 // what a run summarizes and what the live ticker cycles through.
-const CARD_TOOL_NAMES = new Set(['clarify', 'delegate_task', 'image_generate', 'setup_mcp', 'skill_manage', 'manage_connections'])
+const CARD_TOOL_NAMES = new Set(['clarify', 'delegate_task', 'image_generate', 'setup_mcp', 'skill_manage', 'manage_connections', 'manage_catalog'])
 
 // Name the run splitter uses for a manage_connections part it has classified as a card.
 export const CONNECTION_CARD_KEY = 'manage_connections:card'

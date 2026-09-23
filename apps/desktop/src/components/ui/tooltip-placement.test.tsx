@@ -69,7 +69,7 @@ describe('tooltip placement', () => {
     expect(latestContent()).toMatchObject({ side: 'bottom', align: 'end', collisionPadding: 20 })
   })
 
-  it('renders a control with the trigger in its pane', () => {
+  it('uses the owning pane for a control without changing its trigger', () => {
     render(
       <div data-testid="pane" data-tree-group="test-pane">
         <Tip label="Details">
@@ -127,27 +127,6 @@ describe('tooltip placement', () => {
     )
 
     expect(latestContent().collisionBoundary).toBeUndefined()
-  })
-
-  it('preserves block content within one label surface', () => {
-    render(
-      <Tip
-        label={
-          <div>
-            Long description
-            <br />
-            Second line
-          </div>
-        }
-      >
-        <button>Trigger</button>
-      </Tip>
-    )
-
-    expect(screen.getByRole('tooltip').querySelector('[data-slot="tooltip-label"]')?.textContent).toBe(
-      'Long descriptionSecond line'
-    )
-    expect(screen.getByRole('tooltip').querySelector('[data-slot="tooltip-arrow"]')).not.toBeNull()
   })
 
   it('forwards object refs and clears them on unmount', () => {

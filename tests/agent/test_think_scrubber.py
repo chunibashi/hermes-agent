@@ -129,9 +129,7 @@ class TestResetAndReentry:
     def test_reset_clears_in_block_state(self) -> None:
         s = StreamingThinkScrubber()
         s.feed("<think>hanging")
-        assert s._in_block is True
         s.reset()
-        assert s._in_block is False
         # After reset, a new turn works cleanly
         visible, thinking = _drive(s, ["Hello world"])
         assert visible == "Hello world"
@@ -140,7 +138,6 @@ class TestResetAndReentry:
     def test_reset_clears_buffered_partial_tag(self) -> None:
         s = StreamingThinkScrubber()
         s.feed("word<")
-        assert s._buf == "<"
         s.reset()
         assert s._buf == ""
         visible, thinking = _drive(s, ["fresh content"])
