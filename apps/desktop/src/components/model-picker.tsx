@@ -2,7 +2,7 @@ import type { ModelOptionProvider, ModelPricing } from '@hermes/shared'
 import { fuzzyRank, modelSearchText } from '@hermes/shared'
 import { useStore } from '@nanostores/react'
 import { useQuery } from '@tanstack/react-query'
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 
 import { getLocalModelsStatus } from '@/hermes'
 import { useI18n } from '@/i18n'
@@ -37,6 +37,8 @@ interface ModelPickerDialogProps {
   onSelect: (selection: { provider: string; model: string }) => void
   ownerConnectionId?: string
   profile?: string
+  /** Desktop route profile for provider setup; `profile` may be the backend-side target. */
+  setupProfile?: string
   request?: <T>(method: string, params?: Record<string, unknown>) => Promise<T>
   /**
    * Optional class for DialogContent. Use it to lift the picker onto a higher
@@ -58,6 +60,7 @@ export function ModelPickerDialog({
   ownerConnectionId,
   profile = 'default',
   request,
+  setupProfile,
   contentClassName
 }: ModelPickerDialogProps) {
   const { t } = useI18n()
@@ -187,8 +190,13 @@ export function ModelPickerDialog({
     searchRef.current?.focus()
   }
 
+  const ownerProfile = setupProfile ?? profile
+
   const addProvider = () => {
-    startManualOnboarding()
+    startManualOnboarding(
+      undefined,
+      ownerConnectionId !== undefined ? { connectionId: ownerConnectionId, profile: ownerProfile } : ownerProfile
+    )
     onOpenChange(false)
   }
 
@@ -260,7 +268,7 @@ function ModelResults({
 }: {
   loading: boolean
   error: string | null
-  providers: ModelOptionProvider[]
+  providers: readonly ModelOptionProvider[]
   currentModel: string
   currentProvider: string
   downloads: { jobId: string; target: string }[]

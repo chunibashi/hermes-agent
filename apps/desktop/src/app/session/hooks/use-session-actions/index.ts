@@ -2394,7 +2394,6 @@ export function useSessionActions({
 
                   return requestBranchGateway<SessionCreateResponse>('session.branch', branchParams)
                 })
-                })
               : branchMessages.length
                 ? requestBranchGateway<SessionCreateResponse>('session.create', {
                     ...createParams,
