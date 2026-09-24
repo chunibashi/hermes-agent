@@ -809,6 +809,10 @@ function unwrapUntrustedToolPayload(value: string): string {
 }
 
 function parseStoredToolResult(content: unknown): unknown {
+  if (content === null) {
+    return null
+  }
+
   if (content && typeof content === 'object') {
     return content
   }
@@ -857,11 +861,14 @@ export function toolPartFromStoredCall(
   }
 }
 
-export function applyStoredToolResult(messages: ChatMessage[], toolMessage: SessionMessage): boolean {
-  const toolCallId = toolMessage.tool_call_id || undefined
-  const toolName = toolMessage.tool_name || toolMessage.name || 'tool'
-  const result = storedToolRowResult(toolMessage)
+function storedToolResultMetadata(toolMessage: SessionMessage): ToolResultMetadata | undefined {
+  const display = parseMaybeJsonObject(toolMessage.display_metadata)
+  const metadata = parseMaybeJsonObject(display.tool_result_metadata)
 
+  return typeof metadata.inline_diff === 'string' ? { inline_diff: metadata.inline_diff } : undefined
+}
+
+export function applyStoredToolResult(messages: ChatMessage[], toolMessage: SessionMessage): boolean {
   for (let i = messages.length - 1; i >= 0; i -= 1) {
     const message = messages[i]
 
@@ -869,24 +876,12 @@ export function applyStoredToolResult(messages: ChatMessage[], toolMessage: Sess
       continue
     }
 
-    const partIndex = message.parts.findIndex(
-      part =>
-        part.type === 'tool-call' &&
-        ((toolCallId && part.toolCallId === toolCallId) || (!toolCallId && part.toolName === toolName))
-    )
+    const parts = applyStoredToolResultToParts(message.parts, toolMessage)
 
-    if (partIndex < 0) {
+    if (!parts) {
       continue
     }
 
-    const parts = [...message.parts]
-    const existing = parts[partIndex]
-    parts[partIndex] = {
-      ...existing,
-      completedAt: toolMessage.timestamp,
-      result,
-      isError: false
-    } as ChatMessagePart
     messages[i] = { ...message, parts, serverRowSpan: (message.serverRowSpan ?? 1) + 1 }
 
     return true
@@ -903,9 +898,18 @@ export function applyStoredToolResultToParts(
   const toolName = toolMessage.tool_name || toolMessage.name || 'tool'
   const result = storedToolRowResult(toolMessage)
 
+  const content =
+    toolMessage.content !== undefined
+      ? toolMessage.content
+      : (toolMessage.text ?? toolMessage.context ?? toolMessage.name)
+
+  // Tool-call ids are not unique across turns (llama.cpp/Hermes reuse them),
+  // so only an unresolved part may own a stored result. Property presence,
+  // not truthiness: `false`/`null`/`''`/`0` are completed results too.
   const partIndex = parts.findIndex(
     part =>
       part.type === 'tool-call' &&
+      !Object.hasOwn(part, 'result') &&
       ((toolCallId && part.toolCallId === toolCallId) || (!toolCallId && part.toolName === toolName))
   )
 
@@ -919,6 +923,7 @@ export function applyStoredToolResultToParts(
     ...existing,
     completedAt: toolMessage.timestamp,
     result,
+    toolResultMetadata: storedToolResultMetadata(toolMessage),
     isError: false
   } as ChatMessagePart
 
@@ -948,6 +953,7 @@ export function storedToolMessagePart(toolMessage: SessionMessage, fallbackIndex
     timestamp: toolMessage.timestamp,
     completedAt: toolMessage.timestamp,
     result,
+    toolResultMetadata: storedToolResultMetadata(toolMessage),
     isError: false
   }
 }
