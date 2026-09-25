@@ -39,7 +39,7 @@ interface ModelPickerDialogProps {
   currentModel: string
   currentProvider: string
   onSelect: (selection: { provider: string; model: string }) => void
-  ownerConnectionId?: string
+  ownerConnectionId?: null | string
   profile?: string
   /** Desktop route profile for provider setup; `profile` may be the backend-side target. */
   setupProfile?: string
