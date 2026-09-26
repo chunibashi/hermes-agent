@@ -700,6 +700,9 @@ def run_uninstall(args):
     print(f"  Config:  {hermes_home / 'config.yaml'}")
     print(f"  Secrets: {hermes_home / '.env'}")
     print(f"  Data:    {hermes_home / 'cron/'}, {hermes_home / 'sessions/'}, {hermes_home / 'logs/'}")
+    from hermes_cli.gui_uninstall import desktop_userdata_dir
+    if (desktop_userdata := desktop_userdata_dir()).exists():
+        print(f"  Desktop: {desktop_userdata}  (app data - kept by 'Keep data', removed by 'Full uninstall')")
     print()
 
     if named_profiles:
@@ -775,10 +778,18 @@ def _print_uninstall_dry_run(*, project_root: Path, hermes_home: Path, full_unin
     print("  • Hermes wrapper scripts and Hermes-managed node/npm/npx symlinks")
     print("  • Desktop Chat GUI artifacts")
     print(f"  • Code checkout: {project_root}")
+    from hermes_cli.gui_uninstall import desktop_userdata_dir
+    userdata = desktop_userdata_dir()
     if not full_uninstall:
         print(f"  • Keep Hermes config/data: {hermes_home}")
+        if userdata.exists():
+            print(f"  • Keep desktop app data: {userdata}")
     else:
         print(f"  • Hermes config/data: {hermes_home}")
+        if sys.platform == "darwin":
+            print("  • macOS: dashboard/serve launchd jobs, Electron + setup caches")
+        if userdata.exists():
+            print(f"  • Desktop app data: {userdata}")
         profiles = _discover_named_profiles() if _is_default_hermes_home(hermes_home) else []
         if profiles:
             print("  • Named profiles (interactive uninstall asks before removing):")
@@ -807,6 +818,90 @@ def _rmtree_step(path: Path, *, indent: str = "", fully: bool = True) -> None:
         log_warn(f"{indent}Could not {'fully ' if fully else ''}remove {path}: {e}")
         if fully:
             log_info("You may need to manually remove it")
+
+
+def _macos_cache_leftover_dirs() -> "list[Path]":
+    """Cache dirs Electron/Chromium and the setup binary write OUTSIDE HERMES_HOME on
+    macOS. Chromium splits the desktop app's HTTP/script caches under ``~/Library/Caches``
+    keyed by both the product name and the app id, and the Tauri setup binary does the
+    same under its own pair of identifiers. ``gui_uninstall`` removes the userData dir
+    (``Application Support/Hermes``) but never these (#62209)."""
+    caches = Path.home() / "Library" / "Caches"
+    return [
+        caches / "Hermes",
+        caches / "com.nousresearch.hermes",
+        caches / "hermes-setup",
+        caches / "com.nousresearch.hermes.setup",
+    ]
+
+
+def _rmtree_if_exists(path: Path) -> bool:
+    """``_remove_each`` remover: True (after removing) when *path* exists, else False."""
+    if not path.exists():
+        return False
+    shutil.rmtree(path)
+    return True
+
+
+def remove_dashboard_launchd_jobs() -> "list[Path]":
+    """macOS: boot out and delete every launchd job whose ``ProgramArguments`` runs a
+    ``hermes dashboard`` / ``hermes serve`` backend, returning the removed plist paths.
+
+    The gateway uninstall only reaches the gateway label, so a dashboard/serve
+    LaunchAgent survives a full uninstall and launchd keeps respawning its backend.
+    Mirrors the enumeration ``hermes_cli.main_dashboard`` uses to find those jobs
+    (``_launchd_plist_dirs`` + ``_parse_dashboard_runtime``): read each plist, match the
+    arguments, ``launchctl bootout`` the job's domains (launchd takes the process down;
+    booting out an already-unloaded job is fine and never checked), then delete the
+    plist — a stale, not-loaded plist is still Hermes-created and still goes. A missing,
+    unreadable, or malformed plist is skipped, never fatal. macOS only (empty list
+    elsewhere)."""
+    if sys.platform != "darwin":
+        return []
+    import plistlib
+    import shlex
+    from xml.parsers.expat import ExpatError
+
+    from hermes_cli.main_dashboard import _launchd_plist_dirs, _parse_dashboard_runtime
+
+    uid = os.getuid()  # windows-footgun: ok — darwin-only branch
+    removed: "list[Path]" = []
+    for kind, plist_dir in _launchd_plist_dirs():
+        try:
+            plists = sorted(plist_dir.glob("*.plist"))
+        except OSError:
+            continue
+        for plist_path in plists:
+            try:
+                with open(plist_path, "rb") as f:
+                    data = plistlib.load(f)
+            # ExpatError is NOT a ValueError: plistlib propagates it unwrapped for XML
+            # that is not well-formed; one malformed operator file must skip — not
+            # abort — the sweep (same contract as main_dashboard's scan).
+            except (OSError, ValueError, plistlib.InvalidFileException, ExpatError):
+                continue
+            if not isinstance(data, dict):
+                continue
+            label = str(data.get("Label") or "").strip()
+            args = data.get("ProgramArguments")
+            if not label or not isinstance(args, list) or not args:
+                continue
+            if _parse_dashboard_runtime(shlex.join([str(a) for a in args])) is None:
+                continue
+            domains = ("system",) if kind == "daemon" else (f"gui/{uid}", f"user/{uid}")
+            for domain in domains:
+                try:
+                    subprocess.run(
+                        ["launchctl", "bootout", f"{domain}/{label}"],
+                        capture_output=True, check=False, timeout=90)
+                except (OSError, subprocess.TimeoutExpired) as e:
+                    log_warn(f"Could not boot out {domain}/{label}: {e}")
+            try:
+                plist_path.unlink()
+                removed.append(plist_path)
+            except OSError as e:
+                log_warn(f"Could not remove {plist_path}: {e}")
+    return removed
 
 
 def _perform_uninstall(
@@ -854,10 +949,12 @@ def _perform_uninstall(
 
     # 3c. Chat GUI artifacts go with the agent code. uninstall_gui() never touches config/sessions/
     #     .env (safe in keep-data mode); the packaged app + Electron userData live OUTSIDE HERMES_HOME.
+    #     The userData dir is user configuration (connections.json, OAuth partitions, renderer
+    #     state), so keep-data preserves it — only the full wipe removes it.
     log_info("Removing desktop Chat GUI artifacts...")
     try:
         from hermes_cli.gui_uninstall import uninstall_gui
-        if not uninstall_gui(hermes_home):
+        if not uninstall_gui(hermes_home, remove_userdata=full_uninstall):
             log_info("No desktop GUI artifacts found")
     except Exception as e:
         log_warn(f"Could not remove desktop GUI artifacts: {e}")
@@ -894,6 +991,21 @@ def _perform_uninstall(
         #     but their services + alias scripts live OUTSIDE the default root.
         for prof in named_profiles if remove_profiles else ():
             _uninstall_profile(prof)
+        # 5b. macOS: dashboard/serve launchd jobs the gateway uninstall never reaches (it
+        #     only removes the gateway label) — boot them out and delete their plists,
+        #     mirroring the enumeration main_dashboard uses to find them (#62209).
+        if sys.platform == "darwin":
+            _remove_step(
+                "Removing dashboard/serve launchd jobs...",
+                remove_dashboard_launchd_jobs, "Removed {}",
+                "No dashboard/serve launchd jobs found")
+        # 5c. macOS: Electron/Chromium and setup cache dirs written OUTSIDE HERMES_HOME
+        #     survive both the checkout removal and the home rmtree below (#62209).
+        if sys.platform == "darwin":
+            _remove_step(
+                "Removing Electron and setup caches...",
+                lambda: _remove_each(_macos_cache_leftover_dirs(), _rmtree_if_exists), "Removed {}",
+                "No Electron or setup caches found")
         log_info("Removing configuration and data...")
         _rmtree_step(hermes_home)
     else:
@@ -906,6 +1018,9 @@ def _perform_uninstall(
     if not full_uninstall:
         print(color("Your configuration and data have been preserved:", Colors.CYAN))
         print(f"  {hermes_home}/")
+        from hermes_cli.gui_uninstall import desktop_userdata_dir
+        if (desktop_userdata := desktop_userdata_dir()).exists():
+            print(f"  {desktop_userdata}  (desktop app data)")
         print()
         print("To reinstall later with your existing settings:")
         print(color(_REINSTALL_HINT[windows], Colors.DIM))

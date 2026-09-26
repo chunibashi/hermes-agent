@@ -733,15 +733,17 @@ export function ModelCatalogMenu({
                       effFast
                     )
 
-                    const meta = [
+                    // Row meta (variant tag, fast mode, reasoning effort) renders as
+                    // discrete badge chips BESIDE the name — not appended to it — so
+                    // "High" reads as the model's reasoning setting, never as part of a
+                    // differently-named model.
+                    const metaTags = [
                       tag || null,
                       fastControl.kind !== 'none' && fastControl.on ? copy.fast : null,
                       (caps?.reasoning ?? true) && !(isCurrent && current.effortPending)
                         ? reasoningEffortLabel(effEffort || defaultEffort, isCurrent ? current.effortWire : undefined)
                         : null
-                    ]
-                      .filter(Boolean)
-                      .join(' ')
+                    ].filter((chip): chip is string => Boolean(chip))
 
                     const faved = isFavorite(favorites, group.provider.slug, family.id)
 
@@ -783,9 +785,18 @@ export function ModelCatalogMenu({
                           >
                             {faved ? '★' : '☆'}
                           </button>
-                          <span className="min-w-0 flex-1 truncate">
-                            <HighlightMatches foldSeparators query={search} text={name} />
-                            {meta ? <span className="text-(--ui-text-tertiary)"> {meta}</span> : null}
+                          <span className="flex min-w-0 flex-1 items-center gap-1.5">
+                            <span className="min-w-0 truncate">
+                              <HighlightMatches foldSeparators query={search} text={name} />
+                            </span>
+                            {metaTags.map(chip => (
+                              <span
+                                className="shrink-0 rounded-sm border border-(--ui-stroke-secondary) bg-(--chrome-action-hover) px-1 py-px text-[0.625rem] font-medium uppercase leading-none tracking-wide text-(--ui-text-tertiary)"
+                                key={chip}
+                              >
+                                {chip}
+                              </span>
+                            ))}
                           </span>
                           {loadProgress ? (
                             <span
