@@ -2,9 +2,10 @@ import { useStore } from '@nanostores/react'
 import { useEffect, useRef, useState } from 'react'
 
 import { useSessionView } from '@/app/chat/session-view'
+import { writeClipboardText } from '@/components/ui/copy-button'
 import { useI18n } from '@/i18n'
-import { Download, MonitorPlay } from '@/lib/icons'
-import { normalizeOrLocalPreviewTarget } from '@/lib/local-preview'
+import { Check, Copy, Download, MonitorPlay } from '@/lib/icons'
+import { localPreviewTarget, normalizeOrLocalPreviewTarget } from '@/lib/local-preview'
 import { downloadGatewayMediaFile } from '@/lib/media'
 import { previewName } from '@/lib/preview-targets'
 import { notifyError } from '@/store/notifications'
@@ -19,6 +20,7 @@ export function PreviewAttachment({ target }: { target: string }) {
   const [opening, setOpening] = useState(false)
   const [downloading, setDownloading] = useState(false)
   const [downloaded, setDownloaded] = useState(false)
+  const [copied, setCopied] = useState(false)
   const cwdRef = useRef(cwd)
   const mountedRef = useRef(false)
   const requestTokenRef = useRef(0)
@@ -125,6 +127,27 @@ export function PreviewAttachment({ target }: { target: string }) {
     }
   }
 
+  async function copyPath() {
+    // Sync resolution against THIS session's cwd: relative MEDIA paths become
+    // absolute here, and the `**`/backtick residue the parser already stripped
+    // never reaches the clipboard. URLs copy their own href.
+    const resolved = localPreviewTarget(target, cwd)
+    const value = resolved?.path || resolved?.url || target
+
+    try {
+      await writeClipboardText(value)
+
+      if (mountedRef.current) {
+        setCopied(true)
+        setTimeout(() => mountedRef.current && setCopied(false), 2000)
+      }
+    } catch (error) {
+      if (mountedRef.current) {
+        notifyError(error, t.fileMenu.copyPath)
+      }
+    }
+  }
+
   return (
     <div className="flex w-full max-w-160 items-center gap-2 rounded-lg border border-(--ui-stroke-tertiary) bg-card/55 px-2.5 py-1.5 text-sm">
       <span className="grid size-6 shrink-0 place-items-center rounded-md bg-muted/55 text-muted-foreground/85">
@@ -142,6 +165,16 @@ export function PreviewAttachment({ target }: { target: string }) {
       >
         <Download className="size-3" />
         {downloaded ? t.fileMenu.downloadSaved : t.fileMenu.download}
+      </button>
+      <button
+        aria-label={copied ? t.fileMenu.pathCopied : t.fileMenu.copyPath}
+        className="flex shrink-0 items-center gap-1 rounded-md border border-(--ui-stroke-tertiary) bg-background/40 px-2 py-1 text-[0.7rem] font-medium text-muted-foreground transition-colors hover:bg-accent/55 hover:text-foreground"
+        onClick={() => void copyPath()}
+        title={target}
+        type="button"
+      >
+        {copied ? <Check className="size-3" /> : <Copy className="size-3" />}
+        {copied ? t.fileMenu.pathCopied : t.fileMenu.copyPath}
       </button>
       <button
         className="shrink-0 rounded-md border border-(--ui-stroke-tertiary) bg-background/40 px-2 py-1 text-[0.7rem] font-medium text-muted-foreground transition-colors hover:bg-accent/55 hover:text-foreground disabled:opacity-50"

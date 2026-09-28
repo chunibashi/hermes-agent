@@ -58,4 +58,16 @@ describe('inline-code MEDIA paths', () => {
     expect(renderMediaTags("MEDIA:'/tmp/a b.md' x")).toBe(`${card('/tmp/a b.md')} x`)
     expect(renderMediaTags('MEDIA:/tmp/a.png')).toBe('[Image: a.png](#media:%2Ftmp%2Fa.png)')
   })
+
+  it('does not swallow bold emphasis markers into the path', () => {
+    // `**MEDIA:<path>**` — the model bolded the whole tag. The trailing `**`
+    // must stay OUTSIDE the captured path or the preview ENOENTs a file that
+    // exists (the exact desktop bug: "Text preview failed: file does not exist").
+    expect(mediaTagValues('**MEDIA:D:\\a\\b\\c\\notes.md**')).toEqual(['D:\\a\\b\\c\\notes.md'])
+    expect(mediaTagValues('**MEDIA:D:\\a\\b\\c\\foo.js**')).toEqual(['D:\\a\\b\\c\\foo.js'])
+    expect(mediaTagValues('MEDIA:C:\\x\\y.mjs* italic tail')).toEqual(['C:\\x\\y.mjs'])
+    expect(renderMediaTags('**MEDIA:/tmp/a.png** prose')).toBe(
+      '[Image: a.png](#media:%2Ftmp%2Fa.png) prose'
+    )
+  })
 })
