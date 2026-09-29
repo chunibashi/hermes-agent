@@ -101,7 +101,13 @@ const TOOL_CARDS: Record<CardToolName, FC<TimelineToolCallProps>> = {
   delegate_task: DelegateToolPart,
   image_generate: ImageGenerateTool,
   manage_catalog: CatalogInstallTool,
-  manage_connections: ConnectionsToolPart
+  manage_connections: ConnectionsToolPart,
+  // Local consent/surface cards kept visible by the card classification:
+  // setup_mcp renders through the same mcpTargets decision as the
+  // connections card; skill_manage is a diff-bearing card drawn by
+  // ToolFallback (inline_diff title stats).
+  setup_mcp: ConnectionsToolPart,
+  skill_manage: ToolFallback
 }
 
 // A failure the user still has to see. The gateway's tool.complete carries the
