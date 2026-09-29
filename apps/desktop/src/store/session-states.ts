@@ -414,6 +414,21 @@ function isLiveTurnAwaitingEvents(state: ClientSessionState | undefined): boolea
   return Boolean(state && (state.busy || state.awaitingResponse || state.turnLive) && !state.needsInput)
 }
 
+/**
+ * True only while the user is actually looking at this window — same gate as
+ * use-background-sync's visiblePoll. The live-turn event-silence verdict needs
+ * it because its backstop clock (the live-status poll) stops feeding in the
+ * background: without this gate an unfocused window force-settles turns that
+ * the backend is merely retrying, stamping a false stream_drop card.
+ */
+function windowActivelyViewed(): boolean {
+  if (typeof document === 'undefined') {
+    return true
+  }
+
+  return document.visibilityState === 'visible' && document.hasFocus()
+}
+
 const SILENT_TURN_RETRY: ErrorSurface = { code: 'stream_drop', layer: 'streaming', retryable: true }
 
 function withSilentTurnRetry(messages: ChatMessage[], streamId: string | null): ChatMessage[] {
@@ -456,6 +471,18 @@ function settleSilentLiveTurn(runtimeId: string) {
   const current = $sessionStates.get()[runtimeId]
 
   if (!current || !isLiveTurnAwaitingEvents(current)) {
+    return
+  }
+
+  // The silence clock only proves death while its backstop is fed: the
+  // live-status poll that re-arms it runs solely in an actively-viewed window
+  // (use-background-sync's visiblePoll gate). An unfocused/hidden window
+  // therefore sees quiet streams that are merely backend stream-retries
+  // (agent-side reconnects run 20-60s per attempt) — force-settling those
+  // killed live background turns behind a stale stream_drop card until the
+  // user clicked back. No viewer, no verdict: the backend's own events and
+  // the focus-restore poll settle the turn through the normal paths.
+  if (!windowActivelyViewed()) {
     return
   }
 

@@ -158,9 +158,16 @@ describe('live turn event silence', () => {
     $unreadFinishedSessionIds.set([])
     $selectedStoredSessionId.set(null)
     $activeSessionId.set(null)
+    // settleSilentLiveTurn only passes judgment in an actively-viewed window
+    // (windowActivelyViewed reads document.visibilityState + hasFocus). jsdom
+    // leaves hasFocus() unconfigured, so pin it to the default "user is here"
+    // state; the backgrounded case is its own test below.
+    Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'visible' })
+    vi.spyOn(document, 'hasFocus').mockReturnValue(true)
   })
 
   afterEach(() => {
+    vi.restoreAllMocks()
     vi.runOnlyPendingTimers()
     vi.useRealTimers()
     clearAllSessionStates()
@@ -268,5 +275,47 @@ describe('live turn event silence', () => {
 
     expect($sessionStates.get()['rt-done']?.messages.some(message => message.errorSurface)).toBe(false)
     expect($workingSessionIds.get()).not.toContain('s-done')
+  })
+
+  it('does not settle a silent turn while the window is backgrounded (no focus)', () => {
+    // A blurred-but-visible window (alt-tabbed) fires no focus/visibility
+    // signal. Skip the force-settle: a quiet stream there is just the backend
+    // stream-retrying, not a dead turn, so it must not be stamped stream_drop.
+    const living = partial('still generating in the background', { storedSessionId: 's-bg' })
+    publishSessionState('rt-bg', living)
+    noteSessionEvent('rt-bg')
+
+    // Take focus away — this is the background window state.
+    Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'visible' })
+    vi.mocked(document.hasFocus).mockReturnValue(false)
+
+    vi.advanceTimersByTime(SILENCE_MS * 3)
+
+    const settled = $sessionStates.get()['rt-bg']
+    expect($workingSessionIds.get()).toContain('s-bg')
+    expect(settled?.busy).toBe(true)
+    expect(settled?.messages.some(message => message.errorSurface)).toBe(false)
+  })
+
+  it('settles a background-silent turn once the user returns focus', () => {
+    $activeSessionId.set('rt-bgf')
+    const living = partial('resumed after focus', { storedSessionId: 's-bgf' })
+    publishSessionState('rt-bgf', living)
+    noteSessionEvent('rt-bgf')
+
+    // Background the window, let the silence window pass without settling…
+    vi.mocked(document.hasFocus).mockReturnValue(false)
+    vi.advanceTimersByTime(SILENCE_MS * 3)
+    expect($sessionStates.get()['rt-bgf']?.busy).toBe(true)
+
+    // …then the user clicks back; the turn is still silent, so it now settles.
+    vi.mocked(document.hasFocus).mockReturnValue(true)
+    noteSessionEvent('rt-bgf')
+    vi.advanceTimersByTime(SILENCE_MS)
+
+    const settled = $sessionStates.get()['rt-bgf']
+    expect($workingSessionIds.get()).not.toContain('s-bgf')
+    expect(settled?.busy).toBe(false)
+    expect(settled?.messages.some(message => message.errorSurface?.retryable)).toBe(true)
   })
 })
