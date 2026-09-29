@@ -73,7 +73,10 @@ function gitFor(cwd, gitBin) {
     return git.env(noConsoleGitEnv(process.env, gitBin || 'git'))
   }
 
-  return git
+  // Non-Windows spawns also hit simple-git's argv-parser env gate, so strip
+  // the same injection-surface keys from the inherited environment instead
+  // of letting EDITOR/PAGER from the user's shell break every git call.
+  return git.env(noConsoleGitEnv(process.env, gitBin || 'git'))
 }
 
 // simple-git reports renames as `old => new` (and `dir/{old => new}/f`); resolve

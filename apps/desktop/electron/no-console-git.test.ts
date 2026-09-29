@@ -9,6 +9,7 @@ import { test } from 'vitest'
 import {
   CREATE_NO_WINDOW,
   NO_CONSOLE_GIT_SCRIPT,
+  noConsoleGitEnv,
   planNoConsoleGitSpawn,
   resolveNoConsolePython,
   simpleGitBinary
@@ -132,4 +133,37 @@ test('host script forwards git argv unchanged and sets CREATE_NO_WINDOW', () => 
   } finally {
     fs.rmSync(dir, { force: true, recursive: true })
   }
+})
+
+test('no-console env strips simple-git argv-parser injection-surface keys', () => {
+  const env = noConsoleGitEnv(
+    {
+      EDITOR: 'notepad',
+      VISUAL: 'code',
+      PAGER: 'cat',
+      GIT_PAGER: 'cat',
+      GIT_ASKPASS: 'askpass.exe',
+      GIT_SSH_COMMAND: 'ssh -o StrictHostKeyChecking=no',
+      GIT_CONFIG_COUNT: '1',
+      GIT_CONFIG_KEY_0: 'core.editor',
+      GIT_CONFIG_VALUE_0: 'notepad',
+      HERMES_GIT_ARGV0: 'keep-me',
+      GIT_TERMINAL_PROMPT: '1',
+      PATH: 'C:\\Windows'
+    },
+    'C:\\Program Files\\Git\\cmd\\git.exe'
+  )
+
+  for (const stripped of ['EDITOR', 'VISUAL', 'PAGER', 'GIT_PAGER', 'GIT_ASKPASS', 'GIT_SSH_COMMAND', 'GIT_CONFIG_COUNT']) {
+    assert.equal(env[stripped], undefined, `${stripped} should be stripped`)
+  }
+
+  // Keyed config vars ride along with GIT_CONFIG_COUNT; drop them as a set.
+  assert.equal(env.GIT_CONFIG_KEY_0, undefined)
+  assert.equal(env.GIT_CONFIG_VALUE_0, undefined)
+
+  // The host's own vars and the PATH survive the strip.
+  assert.equal(env.PATH, 'C:\\Windows')
+  assert.equal(env.HERMES_GIT_ARGV0, JSON.stringify('C:\\Program Files\\Git\\cmd\\git.exe'))
+  assert.equal(env.GIT_TERMINAL_PROMPT, '1')
 })

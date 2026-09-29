@@ -147,11 +147,54 @@ export function windowsGitHost(isWindows = process.platform === 'win32'): NoCons
   }
 }
 
+// simple-git ≥3.30 ships an argv-parser that refuses to run any git command
+// when the spawn environment carries keys it treats as injection surfaces
+// (EDITOR, PAGER, GIT_ASKPASS, ...) unless the matching `allowUnsafe*` option
+// is set. A desktop-launched process inherits these from the user's login
+// shell (git-bash sets EDITOR/PAGER by default), which silently broke every
+// simple-git call — the composer git rail vanished because repoStatus caught
+// the refusal and returned null. The no-console host runs git headlessly, so
+// editor/pager/askpass variables are meaningless here: strip them instead of
+// opting into each escape hatch. Mirrors the argv-parser's own `y` table.
+const UNSAFE_GIT_ENV_KEYS = new Set([
+  'editor',
+  'git_askpass',
+  'git_config',
+  'git_config_count',
+  'git_config_global',
+  'git_config_system',
+  'git_editor',
+  'git_exec_path',
+  'git_external_diff',
+  'git_pager',
+  'git_proxy_command',
+  'git_sequence_editor',
+  'git_ssh',
+  'git_ssh_command',
+  'git_template_dir',
+  'pager',
+  'prefix',
+  'ssh_askpass',
+  // git's editor resolution is GIT_EDITOR → core.editor → VISUAL → EDITOR;
+  // argv-parser only lists EDITOR, but VISUAL is the same injection surface.
+  'visual'
+])
+
+// argv-parser pairs `git_config_count` with numbered `git_config_key_N` /
+// `git_config_value_N` entries; those ride along as a set.
+function isUnsafeGitEnvKey(key: string): boolean {
+  return (
+    UNSAFE_GIT_ENV_KEYS.has(key) ||
+    key.startsWith('git_config_key_') ||
+    key.startsWith('git_config_value_')
+  )
+}
+
 export function noConsoleGitEnv(base: NodeJS.ProcessEnv | undefined, gitBin: string): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {}
 
   for (const [key, value] of Object.entries(base || {})) {
-    if (value !== undefined) {
+    if (value !== undefined && !isUnsafeGitEnvKey(key.toLowerCase())) {
       env[key] = value
     }
   }
