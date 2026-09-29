@@ -36,6 +36,15 @@ const MESSAGE_SELECTOR = [
   '[data-selectable-text="true"]',
 ].join(', ')
 
+/**
+ * Non-chat document panes whose text the user may rightfully select: the
+ * preview rail (markdown / source views toggled `data-selectable-text`),
+ * settings panels, tool details. A Ctrl+A aimed at one of these must select
+ * THAT pane, never the chat transcript. Chat surfaces are excluded here —
+ * they are handled by `surfaceOf`, which is checked first.
+ */
+const DOCUMENT_SELECTOR = '[data-selectable-text="true"], [data-preview-markdown]'
+
 /** First text node inside `el`, or null when the subtree has no text. */
 function firstTextNode(el: Element): Text | null {
   const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT)
@@ -82,6 +91,11 @@ function lastTextNode(el: Element): Text | null {
  * the last text node of the LAST one (document order). Intermediate UI
  * (timestamps, action bars) is included in the range exactly like native
  * select-all includes it; Chromium copies only the selectable text.
+ *
+ * When `root` ITSELF is a selectable pane (the preview rail's markdown /
+ * source views, which carry `data-selectable-text`), that pane is its own
+ * (only) container — the range spans its first→last text node, so Ctrl+A in
+ * a previewed document selects that document, not the chat transcript.
  */
 function selectAllSelectable(root: Element): void {
   const selection = window.getSelection()
@@ -90,17 +104,19 @@ function selectAllSelectable(root: Element): void {
     return
   }
 
-  const containers = root.querySelectorAll<Element>(MESSAGE_SELECTOR)
+  // A selectable root doubles as its own container (no descendant matches).
+  const containers = [...root.querySelectorAll<Element>(MESSAGE_SELECTOR)]
+  const allContainers = root.matches(MESSAGE_SELECTOR) ? [root, ...containers] : containers
 
-  if (containers.length === 0) {
+  if (allContainers.length === 0) {
     selection.removeAllRanges()
     selection.selectAllChildren(root)
 
     return
   }
 
-  const first = firstTextNode(containers[0])
-  const last = lastTextNode(containers[containers.length - 1])
+  const first = firstTextNode(allContainers[0])
+  const last = lastTextNode(allContainers[allContainers.length - 1])
 
   selection.removeAllRanges()
 
@@ -143,11 +159,30 @@ export function useSelectAllGuard(): void {
     // Null until the first pointerdown; resolved lazily at keypress.
     let lastPointerSurface: Element | null = surfaceOf(document.activeElement)
 
+    // When the pointer landed in a NON-chat document pane (preview rail, a
+    // previewed markdown/source view), that pane is the select-all scope —
+    // Ctrl+A there selects the document, never the chat transcript. Seeded
+    // from the mount-time active element's pane (if any) so TypeScript's
+    // narrowed-flow analysis sees a potentially-non-null value outside the
+    // pointerdown closure (it cannot track `let` writes from another handler).
+    const mountPane =
+      document.activeElement instanceof Element && !surfaceOf(document.activeElement)
+        ? (document.activeElement.closest<Element>(DOCUMENT_SELECTOR) ?? null)
+        : null
+
+    let lastPointerDocument: Element | null = mountPane
+
     const onPointerDown = (event: PointerEvent) => {
       const target = event.target instanceof Element ? event.target : null
 
       lastPointerSurface = surfaceOf(target)
       lastPointerInComposer = Boolean(target?.closest('[data-slot="composer-rich-input"]'))
+      // A pointerdown inside a chat surface selects chat (surface above); a
+      // pointerdown in any other selectable pane marks the preview/panel as the
+      // document scope. Avoid matching chat internals that happen to carry
+      // `data-selectable-text` (inline log panels) — the surface check wins.
+      lastPointerDocument =
+        target && !lastPointerSurface ? (target.closest<Element>(DOCUMENT_SELECTOR) ?? null) : null
     }
 
     const onKeyDown = (event: KeyboardEvent) => {
@@ -155,6 +190,7 @@ export function useSelectAllGuard(): void {
         (event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey && event.key.toLowerCase() === 'a'
 
       const active = document.activeElement
+
       const inEditable =
         active instanceof HTMLElement &&
         (active.isContentEditable || active.tagName === 'INPUT' || active.tagName === 'TEXTAREA')
@@ -178,18 +214,38 @@ export function useSelectAllGuard(): void {
         return
       }
 
-      // Focus is in the transcript (or the user just clicked there and
-      // hover-focus stole it back) — block Chromium's auto-focus into the
-      // composer and select the text content directly.
+      // The user's attention is NOT the chat: either they hold focus outside a
+      // chat surface (a previewed document's own editor/text field — native
+      // select-all there is correct), or the last pointer gesture landed in a
+      // non-chat document pane (preview markdown/source). In BOTH cases the
+      // guard must not sweep the chat transcript. The composer itself is chat
+      // chrome (hover-focus steals it when the user clicks a message) — never
+      // mistake it for a foreign editable.
+      const activeInComposer = active?.closest?.('[data-slot="composer-rich-input"]') != null
+
+      if (inEditable && !activeInComposer && !surfaceOf(active)) {
+        return
+      }
+
+      // Focus is in the transcript, or the user's last gesture was inside a
+      // non-chat document pane — block Chromium's auto-focus into the
+      // composer and select the text content of the right scope directly.
       event.preventDefault()
       event.stopImmediatePropagation()
 
-      const root =
-        lastPointerSurface ??
-        document.querySelector('[data-chat-surface]:not([data-chat-unfocused])') ??
-        document.body
+      let root: Element | null = null
 
-      selectAllSelectable(root)
+      if (lastPointerDocument) {
+        root = lastPointerDocument
+      } else if (lastPointerSurface) {
+        root = lastPointerSurface
+      } else if (active instanceof Element && !surfaceOf(active)) {
+        // Keyboard navigation: focus (not a pointer gesture) may sit inside a
+        // non-chat selectable pane — scope to it before falling back to chat.
+        root = active.closest<Element>(DOCUMENT_SELECTOR)
+      }
+
+      selectAllSelectable(root ?? document.querySelector('[data-chat-surface]:not([data-chat-unfocused])') ?? document.body)
     }
 
     document.addEventListener('pointerdown', onPointerDown, true)

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
-import { summarizeToolRun } from './run-summary'
 import { buildToolView } from './fallback-model'
+import { summarizeToolRun } from './run-summary'
 
 const skill = { type: 'tool-call' as const, toolName: 'skill_view', args: { name: 'research-notes' } }
 

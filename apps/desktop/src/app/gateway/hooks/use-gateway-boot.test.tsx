@@ -2659,6 +2659,35 @@ describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => 
     expect($gatewayState.get()).toBe('open')
   })
 
+
+  // Background self-heal (#stream-drop-no-focus): an unfocused-but-visible
+  // window fires NONE of the recovery signals (no focus, no visibilitychange —
+  // Electron keeps the document visible while blurred, no online). The only
+  // thing that always runs is the 60s keepalive tick. A half-open socket (OS
+  // discarded TCP, JS still reports open) must be force-closed and redialed by
+  // that tick alone, or streaming work stalls behind a stale error card until
+  // the user clicks back.
+  it('keepalive tick: probes and force-closes a half-open socket with no focus/visibility/online signal', async () => {
+    render(<Harness />)
+    await flushAsync()
+    expect($gatewayState.get()).toBe('open')
+    const socketCountBefore = FakeWebSocket.instances.length
+    // The backend never answers (sleep/wake TCP black hole), and — crucially —
+    // we dispatch NO focus/visibilitychange/online event: the window is blurred
+    // but visible. Only the 60s keepalive tick may wake the socket.
+    FakeWebSocket.pingMode = 'silent'
+
+    // Wait out one keepalive tick (60s) plus the probe timeout (5s).
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(60_000 + 5_100)
+    })
+    // The probe timeout force-closed the socket → 'closed' → backoff redials.
+    await advanceBackoff()
+
+    expect(FakeWebSocket.instances.length).toBeGreaterThan(socketCountBefore)
+    expect($gatewayState.get()).toBe('open')
+  })
+
   // A restart recovery handed over from system-actions must not blind-close a
   // socket the restart never touched: `serve` dies with the app but the
   // messaging gateway survives it, so the common case is a HEALTHY socket.
@@ -2669,7 +2698,6 @@ describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => 
     await flushAsync()
     expect($gatewayState.get()).toBe('open')
     const socketCountBefore = FakeWebSocket.instances.length
-
     // Default FakeWebSocket.pingMode='pong': the probe answers, so the
     // handler must return without close() and without a redial.
     await act(async () => {

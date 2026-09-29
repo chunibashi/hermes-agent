@@ -229,8 +229,8 @@ import {
   type UninstallSummaryDetails
 } from './desktop-uninstall'
 import { describeDevCdpDecision, resolveDevCdpPort } from './dev-cdp'
-import { installEmbedReferer, startYouTubeEmbedProxy } from './embed-referer'
 import { preReadyDockLaunchSteps } from './dock-launch-order'
+import { installEmbedReferer, startYouTubeEmbedProxy } from './embed-referer'
 import { createAmbientClaimArbiter } from './event-dedupe'
 import { openExternalUrl as externalOpen, type ExternalOpenDeps, reportPreOpenStatFailure } from './external-open'
 import {

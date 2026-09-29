@@ -1,6 +1,7 @@
-import { afterEach, describe, expect, it, vi } from 'vitest'
-import React from 'react'
 import { render } from '@testing-library/react'
+import React from 'react'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+
 import { useSelectAllGuard } from './use-selectall-guard'
 
 function Harness(): null {
@@ -72,6 +73,17 @@ function makeSurface(): HTMLElement {
   document.body.appendChild(surface)
 
   return surface
+}
+
+/** Non-chat selectable pane — e.g. the preview rail's markdown/source view. */
+function makePreviewDocument(): HTMLElement {
+  const pane = document.createElement('div')
+  pane.dataset.selectableText = 'true'
+  pane.textContent = 'previewed source code line 1\npreviewed line 2'
+
+  document.body.appendChild(pane)
+
+  return pane
 }
 
 afterEach(() => {
@@ -167,5 +179,43 @@ describe('useSelectAllGuard', () => {
 
     expect(event.defaultPrevented).toBe(true)
     expect(selectableText()).toContain('hello world')
+  })
+
+  it('selects a previewed document, not the chat, when the pointer is in the preview pane', () => {
+    mountGuard()
+
+    const surface = makeSurface()
+    const pane = makePreviewDocument()
+
+    // User clicked inside the previewed document (non-chat selectable pane).
+    pane.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, composed: true }))
+    setActiveElement(document.body)
+
+    const event = fireKey('a', { ctrl: true })
+
+    expect(event.defaultPrevented).toBe(true)
+    expect(selectableText()).toContain('previewed source code line 1')
+    expect(selectableText()).toContain('previewed line 2')
+    // The chat transcript stays OUT of the selection.
+    expect(selectableText()).not.toContain('hello world')
+    // And the chat surface still exists for the chat-side cases.
+    expect(surface.isConnected).toBe(true)
+  })
+
+  it('lets Ctrl+A pass through natively when focus is an editable inside a preview pane', () => {
+    mountGuard()
+
+    // A non-chat selectable pane holding its own editable (spot-editor).
+    const pane = makePreviewDocument()
+    const editor = document.createElement('textarea')
+    editor.value = 'editor content'
+    pane.appendChild(editor)
+    setActiveElement(editor)
+
+    const event = fireKey('a', { ctrl: true })
+
+    // Native select-all inside the pane's own editable — the guard does not sweep chat.
+    expect(event.defaultPrevented).toBe(false)
+    expect(selectableText()).toBe('')
   })
 })

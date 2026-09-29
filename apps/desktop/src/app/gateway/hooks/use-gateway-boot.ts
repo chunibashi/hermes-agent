@@ -1320,6 +1320,26 @@ export function useGatewayBoot({
       // min-lifetime grace with no store change afterwards would hold its
       // pool slot forever.
       recomputeKeptGateways()
+      // Background self-heal: an unfocused-but-visible window fires none of
+      // the recovery signals (no 'focus', no 'visibilitychange' — Electron
+      // keeps the document 'visible' while blurred), so a half-open socket
+      // whose TCP the OS discarded sits dead until the user clicks back —
+      // streaming work stalls behind a stale error card. This tick is the one
+      // thing that always runs, so probe on it too. Gated on the socket
+      // APPEARING open: that is exactly the state the backoff loop never
+      // covers (nothing schedules a redial while 'open' is reported). A
+      // genuinely closed socket already rides attemptReconnect's own backoff
+      // — calling reconnectNow() there would reset the backoff counters and
+      // re-arm the lost-connection escalation every minute.
+      // reconnectNow()'s liveness ping force-closes a provably-dead socket
+      // and the normal close→backoff→redial→resume machinery takes over,
+      // clearing the card when events flow again. No-op while healthy (probe
+      // answers well inside LIVENESS_PROBE_TIMEOUT_MS) and safe mid-turn (the
+      // in-flight work streak policy defers the teardown).
+
+      if (gatewayOpen()) {
+        void reconnectNow()
+      }
     }, 60_000)
 
     // Bound concurrency cost to consumers: keep a background socket while its
