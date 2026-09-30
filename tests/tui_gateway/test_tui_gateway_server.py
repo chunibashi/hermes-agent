@@ -16248,6 +16248,113 @@ def test_session_branch_writes_to_parent_profile_db(monkeypatch, tmp_path):
             server._sessions.pop(k, None)
 
 
+def test_session_branch_whole_accepts_bubble_row_id(monkeypatch, tmp_path):
+    """session.branch_whole must accept the bubble-branch row_id param.
+
+    Regression: upstream ecacf3d0c9 declared SessionBranchWholeParams with only
+    ``name`` while the desktop bubble branch still sends ``row_id`` (the handler
+    _branch_live has always read it) — extra="forbid" then answered 4000
+    "Extra inputs are not permitted" and the button died.
+    """
+    profile_home = tmp_path / "profiles" / "mlperf"
+    profile_home.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    seen: dict = {"msgs": []}
+
+    class LaunchDB:
+        def create_session(self, *a, **k):
+            seen["launch_create"] = True
+
+        def append_message(self, **k):
+            seen["launch_msg"] = True
+
+        def set_session_title(self, *a, **k):
+            return True
+
+    class ProfileDB:
+        def __init__(self, db_path=None):
+            seen["db_path"] = db_path
+
+        def get_session_title(self, _key):
+            return "parent"
+
+        def get_next_title_in_lineage(self, current):
+            return f"{current} (branch)"
+
+        def set_auto_title(self, key, title, source="derived"):
+            seen["title"] = (key, title)
+
+        def create_session(self, new_key, **kwargs):
+            seen["created"] = new_key
+            seen["profile_name"] = kwargs.get("profile_name")
+
+        def append_messages_batch(self, session_id, messages, **kwargs):
+            for m in messages:
+                seen["msgs"].append(dict(m, session_id=session_id))
+            return list(range(1, len(messages) + 1))
+
+        def set_session_title(self, key, title):
+            seen["title"] = (key, title)
+            return True
+
+        def get_session(self, key):
+            return {"id": key, "cwd": str(tmp_path)}
+
+        def update_session_cwd(self, *a, **k):
+            return None
+
+    class FakeAgent:
+        def __init__(self):
+            self.model = "test-model"
+            self.session_id = None
+
+    parent = {
+        "session_key": "parent-key",
+        "history": [{"role": "user", "content": "hi", "_row_id": 7},
+                    {"role": "assistant", "content": "answer", "_row_id": 8}],
+        "history_lock": __import__("threading").Lock(),
+        "running": False,
+        "cols": 80,
+        "profile_home": str(profile_home),
+        "source": "tui",
+        "agent": FakeAgent(),
+        "created_at": 1.0,
+        "last_active": 1.0,
+        "cwd": str(tmp_path),
+    }
+    server._sessions["parent"] = parent
+    monkeypatch.setattr(server, "_get_db", lambda: LaunchDB())
+    monkeypatch.setattr("hermes_state_registry.acquire", ProfileDB)
+    monkeypatch.setattr(server, "_claim_active_session_slot", lambda *a, **k: (None, None))
+    monkeypatch.setattr(server, "_make_agent", lambda *a, **k: FakeAgent())
+    monkeypatch.setattr(server, "_set_session_context", lambda *a, **k: {})
+    monkeypatch.setattr(server, "_clear_session_context", lambda *a, **k: None)
+    monkeypatch.setattr(server, "_resolve_model", lambda: "test-model")
+    monkeypatch.setattr(server, "_session_cwd", lambda s: str(tmp_path))
+    monkeypatch.setattr(server, "_register_session_cwd", lambda *a, **k: None)
+    monkeypatch.setattr(server, "_attach_worker", lambda *a, **k: None)
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "session.branch_whole",
+                "params": {"session_id": "parent", "row_id": 7},
+            }
+        )
+        # The contract must accept row_id — before the fix this was a 4000
+        # "invalid params for session.branch_whole: row_id: Extra inputs".
+        assert "result" in resp, resp
+        assert seen.get("created")
+        assert seen.get("profile_name") == "mlperf"
+        # row_id 7 resolves in the display projection; the merged assistant run
+        # after it is kept, so the branch carries exactly the clicked turn.
+        assert resp["result"]["message_count"] == 2
+        assert resp["result"]["messages_omitted"] is True
+    finally:
+        for k in list(server._sessions):
+            server._sessions.pop(k, None)
+
+
 def test_session_create_persists_seeded_branch_child(monkeypatch):
     """A desktop branch (session.create with parent_session_id + seeded
     messages) must persist its row + transcript immediately (#93959).

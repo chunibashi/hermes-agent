@@ -2169,6 +2169,7 @@ def _branch_source_history(db, session: dict, old_key: str) -> tuple:
             dict(msg) for msg in list(session.get("display_history_prefix") or []) + list(session.get("history", []))
             if isinstance(msg, dict)]
     raw_history = None
+    history = None
     if callable(get_resume_conversations := getattr(db, "get_resume_conversations", None)):
         try:
             _, display_history = get_resume_conversations(old_key)

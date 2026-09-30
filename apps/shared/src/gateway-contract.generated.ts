@@ -3274,6 +3274,8 @@ export interface SessionBranchWholeParams {
   session_id: string
   profile?: string | null
   name?: string | null
+  count?: number | null
+  row_id?: number | null
 }
 export interface SessionBranchWholeResult {
   session_id: string
