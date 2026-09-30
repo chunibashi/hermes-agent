@@ -13,7 +13,7 @@ import { cn } from '@/lib/utils'
 
 const SLASH_STATUS_RE = /^slash:(?<command>\/[^\n]+)\n(?<output>[\s\S]*)$/
 const STEER_NOTE_RE = /^steer:(?<text>[\s\S]+)$/
-const REVIEW_NOTE_RE = /^review:(?<label>[^:\n]+):?\s*(?<detail>[\s\S]*)$/
+const REVIEW_NOTE_RE = /^review:(?<label>[^:\n\uFF1A]+)[:\uFF1A]?\s*(?<detail>[\s\S]*)$/
 
 interface BackgroundResultProps {
   text: string

@@ -102,6 +102,25 @@ describe('system message timestamp text separation', () => {
     expectTimestampSeparated(container, 'Review saved.')
   })
 
+  it('keeps a CJK review note detail out of the label when the colon is full-width', () => {
+    // The backend summary_callback text ("自我改进回顾：技能 'x' 已修补 …") uses
+    // a full-width colon; the label matcher must stop there or the entire long
+    // detail is swallowed into the single-line gradient label (truncated, never
+    // wrapping). Regression: desktop showed only "…技能 'git" for a long summary.
+    const text = "review:自我改进回顾：技能 'hermes-desktop-debug' 已修补 (references/rpc-contract-rowid-branch.md) · 技能 'git-management' 已修补"
+    const { container } = render(<Harness text={text} />)
+
+    const row = container.querySelector('[data-role="system"]')
+    const label = row?.querySelector('.tool-memory-legendary-title')
+    expect(label?.textContent).toBe('自我改进回顾')
+
+    // The full detail must live in the wrapping meta span, not the truncated label.
+    const meta = row?.querySelector('.tool-memory-legendary-meta')
+    expect(meta?.textContent).toContain("技能 'hermes-desktop-debug' 已修补")
+    expect(meta?.textContent).toContain("· 技能 'git-management' 已修补")
+    expect(row?.textContent).toContain("技能 'git-management' 已修补")
+  })
+
   it('separates a slash-status timestamp in accessible and copied text', () => {
     const { container } = render(<Harness text={'slash:/model\nmodel changed'} />)
 
