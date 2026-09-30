@@ -850,6 +850,8 @@ export const zh = defineLocale({
       system: { label: '跟随系统', description: '跟随系统外观' }
     },
     appearance: {
+      chatTextScaleTitle: '聊天文字大小',
+      chatTextScaleDesc: '相对于界面缩放调整对话文字和消息输入框的字号。侧边栏和控件大小保持不变。',
       title: '外观',
       intro: '这些是仅桌面端的显示偏好。模式控制明暗；主题控制强调色与对话界面样式。',
       colorMode: '颜色模式',
@@ -4504,6 +4506,10 @@ export const zh = defineLocale({
   },
 
   rightSidebar: {
+    terminalReadOnly: '只读输出',
+    terminalReadOnlyHelp:
+      '如需回应提示，请停止后台命令，再在新终端中运行。新终端会打开独立的 shell，不会连接到此进程。',
+    terminalOpenInteractive: '打开新终端',
     aria: '右侧边栏',
     panelsAria: '右侧边栏面板',
     files: '文件系统',

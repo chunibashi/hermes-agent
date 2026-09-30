@@ -33,12 +33,7 @@ import {
 } from '@/components/pane-shell/tree/store'
 import { resolveRememberedActivePane, workspaceScopeKey } from '@/components/pane-shell/workspace-scope'
 import type { WorkspaceMode } from '@/contrib/types'
-import {
-  type ChatMessage,
-  chatMessageText,
-  finalizeInterruptedMessages,
-  sealOpenToolParts
-} from '@/lib/chat-messages'
+import { type ChatMessage, chatMessageText, finalizeInterruptedMessages, sealOpenToolParts } from '@/lib/chat-messages'
 import type { ErrorSurface } from '@/lib/error-surface'
 import { tileFocusStampOnFocusChange } from '@/lib/session-timer-since'
 import { stableArray } from '@/lib/stable-array'
@@ -72,7 +67,8 @@ import {
   setAwaitingResponse,
   setBusy,
   setSessions,
-  setTileSessionFocusStartedAt
+  setTileSessionFocusStartedAt,
+  setTurnStartedAt
 } from './session'
 import { secondaryProfileOwnerForEvent } from './session-event-provenance'
 import { $focusedTreePaneId } from './session-focus'
@@ -463,7 +459,10 @@ interface LiveTurnStatusResponse {
 /** What one `session.active_list` snapshot says about `runtimeId`'s turn. A
  *  runtime missing from a well-formed list has been reaped: its turn is over.
  *  `starting` is an agent build for a turn the backend accepted. */
-export function liveTurnVerdict(response: LiveTurnStatusResponse | null | undefined, runtimeId: string): LiveTurnVerdict {
+export function liveTurnVerdict(
+  response: LiveTurnStatusResponse | null | undefined,
+  runtimeId: string
+): LiveTurnVerdict {
   if (!Array.isArray(response?.sessions)) {
     return 'unknown'
   }
@@ -1098,6 +1097,8 @@ export function clearAllSessionStates() {
  *  alone — a background socket says nothing about the primary composer. */
 export function reconcileBusyStatesOnReconnect(scope?: string) {
   const states = $sessionStates.get()
+  const focusedRuntimeId = $activeSessionId.get()
+  let retiredFocusedTurn = false
 
   // Only the primary socket has a confirm producer for a parked completion
   // (the active profile's `session.active_list` poll); a scoped reconcile
@@ -1116,13 +1117,23 @@ export function reconcileBusyStatesOnReconnect(scope?: string) {
         continue
       }
 
+      if (runtimeId === focusedRuntimeId) {
+        retiredFocusedTurn = true
+      }
+
       sessionTileDelegate()?.retireBusyClaim?.(runtimeId)
 
       // Re-read — the write path may have republished (and released) this entry.
       const published = $sessionStates.get()[runtimeId]
 
       if (published?.busy || published?.awaitingResponse) {
-        publishSessionState(runtimeId, { ...published, awaitingResponse: false, busy: false })
+        publishSessionState(runtimeId, {
+          ...published,
+          awaitingResponse: false,
+          busy: false,
+          turnLive: false,
+          turnStartedAt: null
+        })
       }
     }
   } finally {
@@ -1132,6 +1143,12 @@ export function reconcileBusyStatesOnReconnect(scope?: string) {
   if (scope === undefined) {
     setBusy(false)
     setAwaitingResponse(false)
+  }
+
+  // The global clock mirrors the focused session, whichever socket owns it.
+  // A reconnect for a different backend must not reset that session's timer.
+  if (retiredFocusedTurn) {
+    setTurnStartedAt(null)
   }
 }
 
@@ -2532,14 +2549,37 @@ export function focusOpenSession(
 
   // Already the main session: front the workspace tab and drop tile focus so
   // the readouts + sidebar highlight come home (a no-op when main is focused).
-  if (workspaceScope.workspaceMode === 'sessions' && aliases.includes($selectedStoredSessionId.get() ?? '')) {
-    revealTreePane('workspace')
-    noteActiveTreeGroup(null)
-
+  // Bot scopes never claim main here — a Bot tab for the same stored id must
+  // stay mintable — they front through frontMainIfSelected at their own door.
+  if (workspaceScope.workspaceMode === 'sessions' && frontMainIfSelected(storedSessionId)) {
     return 'main'
   }
 
   return null
+}
+
+/** Front the workspace pane when `storedSessionId` names the chat MAIN already
+ *  holds (through any compression-lineage alias). False when main holds
+ *  another chat or nothing — the caller then owns the open.
+ *
+ *  The door for a Bot Mode roster click whose owner lost its tile: closing the
+ *  main tab promotes a neighbouring tile INTO the workspace pane (dropping its
+ *  tile, close-tab.ts), so the canonical Bot Chat lives in main with no tile
+ *  left. The route already points at that session, so navigating is a no-op,
+ *  and focusOpenSession won't claim the 'main' hit for a Bot scope — a Bot tab
+ *  for the same stored id must stay mintable. Without this front, a zone
+ *  parked on another bot's tile left the row click looking dead (#125899). */
+export function frontMainIfSelected(storedSessionId: string): boolean {
+  const aliases = lineageAliases(storedSessionId, $sessions.get())
+
+  if (!aliases.includes($selectedStoredSessionId.get() ?? '')) {
+    return false
+  }
+
+  revealTreePane('workspace')
+  noteActiveTreeGroup(null)
+
+  return true
 }
 
 /** Front the tab a Bot Mode owner already has open and report its stored id:
