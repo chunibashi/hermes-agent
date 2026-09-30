@@ -239,9 +239,11 @@ class TestThinkingOnlyTruncation:
         assert _no_empty_assistant_rows(result["messages"]) == []
 
 class TestThinkingExhaustionFallsBack:
-    """Thinking-budget exhaustion now escalates to the fallback chain BEFORE
+    """Thinking-budget exhaustion escalates to the fallback chain BEFORE
     aborting: a lower-reasoning / non-reasoning fallback model may still answer
-    within its own output cap. Without a chain the original abort is preserved.
+    within its own output cap. WITHOUT a chain the turn no longer aborts — it
+    continues on the primary with a one-shot reasoning-off override, so the
+    remaining budget goes to the answer instead of re-burned thinking.
     Repetition-dominated truncation stays a plain abort (it was never routed to
     fallback and continuation cannot fix a degenerate loop)."""
 
@@ -249,7 +251,7 @@ class TestThinkingExhaustionFallsBack:
         """One thinking-only truncation with a configured fallback chain: the
         chain is consulted immediately (zero continuation retries burned) and
         the fallback provider completes the turn."""
-        from tests.run_agent.test_run_agent import _mock_assistant_msg, _mock_response
+        from tests.agent.test_run_agent import _mock_assistant_msg, _mock_response
 
         def _thinking_only():
             return SimpleNamespace(
@@ -301,11 +303,16 @@ class TestThinkingExhaustionFallsBack:
             "The thinking-only fragment must never enter the transcript."
         )
 
-    def test_thinking_only_truncation_aborts_without_fallback(self, loop_agent):
-        """No fallback chain configured: the thinking-exhausted abort is kept —
-        the user-facing reasoning notice still surfaces, no silent success."""
-        from tests.run_agent.test_run_agent import _mock_assistant_msg
+    def test_thinking_only_truncation_retries_with_thinking_off_without_fallback(self, loop_agent):
+        """No fallback chain: the thinking-exhausted turn continues on the primary
+        with a one-shot reasoning-off retry instead of aborting — the budget goes
+        to the answer, and the retry request actually carries thinking off."""
+        from tests.agent.test_run_agent import _mock_assistant_msg, _mock_response
 
+        loop_agent.reasoning_config = {"enabled": True, "effort": "high"}
+        loop_agent._supports_reasoning_extra_body = lambda: True
+        loop_agent._fallback_chain = []
+        loop_agent._fallback_index = 0
         loop_agent.client.chat.completions.create.side_effect = [
             SimpleNamespace(
                 id="chatcmpl-thinking-exhausted",
@@ -319,22 +326,32 @@ class TestThinkingExhaustionFallsBack:
                 )],
                 usage=None,
             ),
+            _mock_response(content="Done without thinking.", finish_reason="stop"),
         ]
         # The loop_agent fixture builds no fallback chain (no fallback_model arg).
         result = _run(loop_agent, "write me a long report")
 
-        assert result["completed"] is False
-        assert "reasoning" in (result.get("error") or "").lower(), (
-            "Without a fallback the turn must surface the reasoning-exhausted "
-            "error, not a generic truncation notice."
+        assert result["completed"] is True, (
+            "Without a fallback the turn must self-recover via a reasoning-off "
+            "retry, not abort."
         )
-        assert _no_empty_assistant_rows(result["messages"]) == []
+        assert result["final_response"] == "Done without thinking."
+        assert _no_empty_assistant_rows(result["messages"]) == [], (
+            "A thinking-only (no visible text) fragment must never enter the "
+            "transcript."
+        )
+        calls = loop_agent.client.chat.completions.create.call_args_list
+        assert len(calls) == 2
+        second = (calls[1].kwargs.get("extra_body") or {}).get("reasoning")
+        assert second is not None and second.get("enabled") is False, (
+            f"the retry must go out with thinking off, got {second!r}"
+        )
 
     def test_repetition_dominated_still_aborts_with_fallback_available(self, loop_agent):
         """Repetition-dominated truncation is NOT routed to fallback even when a
         chain exists — the degenerate loop is model behaviour that continuation
         cannot fix, and the fallback budget is not spent on it."""
-        from tests.run_agent.test_run_agent import _mock_assistant_msg
+        from tests.agent.test_run_agent import _mock_assistant_msg
 
         loop_agent.client.chat.completions.create.side_effect = [
             SimpleNamespace(

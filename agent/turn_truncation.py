@@ -333,10 +333,15 @@ def _continue_text(st: _Trunc, _retry: TurnRetryState, assistant_message: Any) -
     st.length_continue_retries += 1
     n = st.length_continue_retries
     _interim_content = getattr(assistant_message, "content", None)
-    if not _interim_content and not st.is_stub:
-        # Thinking-only truncation: continuing with thinking ON re-burns the budget.
+    _interim_visible = (
+        agent._strip_think_blocks(_interim_content).strip()
+        if isinstance(_interim_content, str) else _interim_content
+    )
+    if not _interim_visible and not st.is_stub:
+        # Thinking-only truncation (empty content, or a bare <think> block): continuing
+        # with thinking ON re-burns the budget.
         agent._ephemeral_reasoning_off = True
-    if _interim_content:
+    if _interim_visible:
         interim_msg = agent._build_assistant_message(assistant_message, st.finish_reason)
         interim_msg["_length_continuation_fragment"] = True  # ceiling exit drops these
         append_message(messages, interim_msg)
@@ -536,6 +541,16 @@ def recover_from_truncation(
             escalated = _thinking_exhausted_fallback(st, _retry)
             if escalated is not None:
                 return escalated
+            # No fallback chain to hand the turn to: continue on the primary with the
+            # one-shot reasoning-off override instead of aborting — the budget then
+            # goes to the answer, not re-burned thinking.
+            if agent.api_mode in _CONTINUABLE_MODES and _trunc_msg is not None and not _trunc_has_tool_calls:
+                agent._vprint(
+                    f"{agent.log_prefix}💭 Reasoning exhausted the output budget — no fallback "
+                    "provider — retrying once with thinking off...",
+                    force=True, diagnostic=True,
+                )
+                return _continue_text(st, _retry, _trunc_msg)
         agent._vprint(f"{agent.log_prefix}{line}", force=True, diagnostic=True)
         return st.end_turn(user_response, error)
 

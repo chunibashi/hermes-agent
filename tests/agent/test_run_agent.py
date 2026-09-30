@@ -375,6 +375,17 @@ def _mock_response(
     return resp
 
 
+def _no_empty_assistant_rows(messages):
+    """Assistant rows with neither visible content nor tool calls — a poisoned
+    transcript signature (an empty thinking-only fragment leaked into history)."""
+    return [
+        m for m in messages
+        if m.get("role") == "assistant"
+        and not (m.get("content") or "").strip()
+        and not m.get("tool_calls")
+    ]
+
+
 # ===================================================================
 # Group 1: Pure Functions
 # ===================================================================
@@ -4411,8 +4422,11 @@ class TestRunConversation:
         unpunctuated = SimpleNamespace(content="Based on the results the best next step is to update the config", tool_calls=None)
         assert agent._should_treat_stop_as_truncated("stop", unpunctuated, [{"role": "tool", "content": "r"}]) is False
 
-    def test_length_thinking_exhausted_skips_continuation(self, agent):
-        """When finish_reason='length' but content is only thinking, skip retries."""
+    def test_length_thinking_exhausted_retries_then_ceiling(self, agent):
+        """When finish_reason='length' and content is only thinking, the turn no
+        longer aborts immediately: it retries with the one-shot reasoning-off
+        override. Only after the continuation ceiling (4 attempts, all still
+        thinking-only) does it exit with the user-facing budget guidance."""
         self._setup_agent(agent)
         resp = _mock_response(
             content="<think>internal reasoning</think>",
@@ -4427,12 +4441,15 @@ class TestRunConversation:
         ):
             result = agent.run_conversation("hello")
 
-        # Should return immediately — no continuation, only 1 API call
+        # 1 original call + 3 continuation attempts (n=1..3 each append the nudge
+        # and re-issue; the 4th response hits the n < 4 ceiling and exits).
         assert result["completed"] is False
-        assert result["api_calls"] == 1
-        # Should have a user-friendly response (not None)
+        assert result["api_calls"] == 4
+        # The ceiling exit surfaces the thinking-budget guidance, not None.
         assert result["final_response"] is not None
         assert "/reasoning" in result["final_response"]
+        # A thinking-only fragment must never enter the transcript.
+        assert _no_empty_assistant_rows(result["messages"]) == []
 
 
     def test_length_with_tool_calls_returns_partial_without_executing_tools(self, agent):
