@@ -3378,6 +3378,12 @@ describe('branchStoredSession desktop source tagging', () => {
   })
 
   it('branches a compacted live chat without hydrating its transcript in the renderer', async () => {
+    // The resumes-the-branch test above legitimately hydrates (selectedStoredSessionId
+    // set + messageId), so its getAllSessionMessages call would trip this test's
+    // not.toHaveBeenCalled() assertion. Clear the leftover record: the assertion
+    // below only guards THIS path (whole-chat branch must not hydrate).
+    vi.mocked(getAllSessionMessages).mockClear()
+
     let branchParams: Record<string, unknown> | undefined
 
     const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
@@ -3457,6 +3463,12 @@ describe('branchStoredSession desktop source tagging', () => {
   })
 
   it('branches a loaded tile transcript through the clicked message', async () => {
+    // Reset earlier tests' getAllSessionMessages implementations: this path
+    // intentionally exercises the hydration-failure fallback (no authoritative
+    // transcript in the renderer), and a stray mockResolvedValue from a prior
+    // test would change the selectBranchMessages prefix.
+    vi.mocked(getAllSessionMessages).mockReset()
+
     const requestGateway = vi.fn(async (method: string) => {
       if (method === 'session.branch') {
         return { session_id: 'branch-runtime', stored_session_id: 'branch-stored' } as never

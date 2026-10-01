@@ -2781,7 +2781,7 @@ export function useSessionActions({
         if (!createFlight) {
           const branchParams = {
             session_id: sourceSessionId,
-                        // Prefer the clicked bubble's durable row id over a count: the
+            // Prefer the clicked bubble's durable row id over a count: the
             // backend truncates its OWN lineage display projection, which can
             // differ in length from the REST tip-only projection the count
             // was derived from (context-compressed sessions) — a count then
@@ -2809,7 +2809,7 @@ export function useSessionActions({
           createFlight = (
             sourceSessionId
               ? requestBranchGateway<SessionCreateResponse>(
-                  branchCount === undefined ? 'session.branch_whole' : 'session.branch',
+                  branchMessages.length ? 'session.branch' : 'session.branch_whole',
                   branchParams
                 ).catch(err => {
                   if (!isMissingRpcMethod(err)) {
@@ -3089,8 +3089,7 @@ export function useSessionActions({
       // when authoritative is unavailable, branchMessages may end at a different
       // row (the local atom's tail), causing the backend to amputate the branch.
       const clickedMessage = messageId
-        ? (authoritativeMessages ?? []).find(m => m.id === messageId) ??
-          messages.find(m => m.id === messageId)
+        ? ((authoritativeMessages ?? []).find(m => m.id === messageId) ?? messages.find(m => m.id === messageId))
         : undefined
       const branchPointRowId = clickedMessage?.rowId
 
@@ -3100,15 +3099,28 @@ export function useSessionActions({
         storedSessionId,
         cwd?.trim(),
         profile,
-        // Omit the count for bubble-branch paths: the row_id drives the
-        // backend's truncation. Sending a count derived from a potentially
-        // truncated localMessages would amputate the branch when the REST
-        // authoritative read is unavailable (the local atom may be a
-        // compacted model projection). The backend reads its own full
-        // display projection via get_resume_conversations and cuts at the
-        // row_id; no count means no fallback truncation when row_id is
-        // absent (unfiltered row for a tool/empty click target).
-        undefined,
+        // Count semantics, merged across the branch paths:
+        //
+        // 1. row_id is the PRIMARY truncation driver (local lineage fix):
+        //    the backend cuts its OWN display projection at that durable row,
+        //    so the count stays omitted for live bubbles whose projection
+        //    length may differ from the local atom's (compacted lineage).
+        // 2. count is a FALLBACK truncation for PERSISTED sessions (tile
+        //    transcripts): when the clicked message is not the last one, the
+        //    branch must be amputated to the clicked prefix even if the
+        //    renderer never hydrated an authoritative transcript — the
+        //    backend then cuts by prefix length. Sessions without a stored id
+        //    and clicks on the final message both keep the count omitted.
+        // Sending a count derived from a potentially truncated localMessages
+        // would amputate the branch when the REST authoritative read is
+        // unavailable (the local atom may be a compacted model projection).
+        // The backend reads its own full display projection via
+        // get_resume_conversations and cuts at the row_id; no count means no
+        // fallback truncation when row_id is absent (unfiltered row for a
+        // tool/empty click target).
+        storedSessionId && messageId && branchMessages.length < (authoritativeMessages?.length ?? messages.length)
+          ? branchMessages.length
+          : undefined,
         branchPointRowId,
         ownerRoute
       )
