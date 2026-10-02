@@ -3356,7 +3356,6 @@ export const ja = defineLocale({
       fast: '高速',
       favorite: 'お気に入り',
       unfavorite: 'お気に入り解除',
-      favorites: 'お気に入り',
       free: '無料',
       cacheRead: 'キャッシュ読み取り',
       priceTitle: (input: string, output: string, cache: string) =>

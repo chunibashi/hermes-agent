@@ -4618,7 +4618,6 @@ export const en: Translations = {
       fast: 'Fast',
       favorite: 'Favorite',
       unfavorite: 'Unfavorite',
-      favorites: 'Favorites',
       free: 'free',
       cacheRead: 'cached read',
       priceTitle: (input: string, output: string, cache: string) =>

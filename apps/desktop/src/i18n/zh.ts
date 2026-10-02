@@ -4313,7 +4313,6 @@ export const zh = defineLocale({
       fast: '快速',
       favorite: '收藏',
       unfavorite: '取消收藏',
-      favorites: '收藏',
       free: '免费',
       cacheRead: '缓存读取',
       priceTitle: (input: string, output: string, cache: string) =>

@@ -3867,7 +3867,6 @@ export interface Translations {
       fast: string
       favorite: string
       unfavorite: string
-      favorites: string
       free: string
       cacheRead: string
       priceTitle: (input: string, output: string, cache: string) => string
