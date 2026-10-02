@@ -8,84 +8,66 @@ import { useIsDark } from './use-is-dark'
 const YOUTUBE_ALLOW =
   'accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share; fullscreen'
 
-// Packaged-app local wrapper: the renderer loads from file://, so a direct
-// YouTube iframe gets an empty `document.referrer` and the player refuses to
-// configure (Error 153). The backend starts a localhost proxy that serves
-// /yt/<videoId> as a tiny page re-embedding the real YouTube iframe — that
-// inner iframe sees `http://localhost:<port>` as its referrer and plays.
-// YouTube also rejects bare-IP referrers (127.0.0.1), which is why the proxy
-// is addressed as `localhost`.
-let cachedProxyPort: number | null | undefined
+const hasHttpOrigin = () =>
+  typeof window !== 'undefined' &&
+  (window.location.protocol === 'http:' || window.location.protocol === 'https:') &&
+  Boolean(window.location.origin) &&
+  window.location.origin !== 'null'
 
-async function embedProxyPort(): Promise<number | null> {
-  if (cachedProxyPort !== undefined) {
-    return cachedProxyPort
-  }
-
-  try {
-    cachedProxyPort = (await window.hermesDesktop?.getEmbedProxyPort?.()) ?? null
-  } catch {
-    cachedProxyPort = null
-  }
-
-  return cachedProxyPort
-}
-
-function youtubeSrc(embedUrl: string, proxyPort: number | null | undefined): string {
+function youtubeSrc(embedUrl: string): string {
   const url = new URL(embedUrl)
 
-  // Route through the local wrapper when the packaged app provides one. The
-  // wrapper re-embeds the same nocookie URL, so the query (modestbranding,
-  // rel, start...) is forwarded verbatim.
-  if (proxyPort != null) {
-    const videoId = url.pathname.replace(/^\/embed\//, '')
-
-    return `http://localhost:${proxyPort}/yt/${videoId}${url.search}`
-  }
-
-  // Dev / no-proxy fallback: direct embed. Only pass origin when it is an
-  // HTTP(S) origin; custom schemes (app://, file://) can make the player
-  // reject otherwise embeddable videos.
-  if (
-    typeof window !== 'undefined' &&
-    (window.location.protocol === 'http:' || window.location.protocol === 'https:') &&
-    window.location.origin &&
-    window.location.origin !== 'null'
-  ) {
+  // Only pass origin when it is an HTTP(S) origin; custom schemes (app://,
+  // file://) can make the player reject otherwise embeddable videos.
+  if (hasHttpOrigin()) {
     url.searchParams.set('origin', window.location.origin)
   }
 
   return url.toString()
 }
 
+/** The same video and params, served through the Desktop loopback wrapper. */
+export function wrappedYoutubeSrc(embedUrl: string, hostOrigin: string): string {
+  const url = new URL(embedUrl)
+  const id = url.pathname.split('/').pop() ?? ''
+
+  return `${hostOrigin}/youtube/${encodeURIComponent(id)}${url.search}`
+}
+
+// The packaged renderer is a file:// page, which YouTube rejects (error 153), so
+// there the player is hosted by a loopback wrapper page (electron/embed-host.ts).
+// Dev and web renderers already have an http origin and embed directly.
+function usePlayerSrc(embedUrl: string): null | string {
+  const direct = useMemo(() => youtubeSrc(embedUrl), [embedUrl])
+  const getHostOrigin = hasHttpOrigin() ? undefined : window.hermesDesktop?.getEmbedHostOrigin
+  const [wrapped, setWrapped] = useState<null | string>(null)
+
+  useEffect(() => {
+    if (!getHostOrigin) {
+      return
+    }
+
+    let live = true
+
+    getHostOrigin()
+      .then(origin => live && setWrapped(wrappedYoutubeSrc(embedUrl, origin)))
+      .catch(() => live && setWrapped(direct))
+
+    return () => {
+      live = false
+    }
+  }, [direct, embedUrl, getHostOrigin])
+
+  return getHostOrigin ? wrapped : direct
+}
+
 // Keep this as a plain iframe and let YouTube render its native player/error UI.
 export default function YouTubeEmbedRenderer({ descriptor }: { descriptor: FrameEmbed }) {
   const isDark = useIsDark()
-  const [proxyPort, setProxyPort] = useState<number | null | undefined>(undefined)
+  const src = usePlayerSrc(descriptor.embedUrl)
 
-  useEffect(() => {
-    let cancelled = false
-
-    embedProxyPort().then(port => {
-      if (!cancelled) {
-        setProxyPort(port)
-      }
-    })
-
-    return () => {
-      cancelled = true
-    }
-  }, [])
-
-  const src = useMemo(
-    () => youtubeSrc(descriptor.embedUrl, proxyPort),
-    [descriptor.embedUrl, proxyPort]
-  )
-
-  // Wait for the proxy-port probe before rendering — otherwise the iframe
-  // briefly loads the direct URL (Error 153 on file://) before the proxy URL.
-  if (proxyPort === undefined) {
-    return null
+  if (!src) {
+    return <div className="block aspect-video w-full" />
   }
 
   // Width is capped to the ratio by UrlEmbed, so aspect-video sizes height ≤ cap.
