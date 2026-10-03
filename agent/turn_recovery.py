@@ -312,6 +312,26 @@ def recover_before_classification(
         agent._client_kwargs = {}
         _vlines(agent, "⚠️  AnthropicBedrock SDK streaming failed — falling back to native Converse API for this session.")
         return True, active_system_prompt
+
+    # Reasoning ate the entire output budget and the route surfaced it as an API ERROR rather
+    # than a finish_reason='length' response (nap/New-API relaykit does this). Without this
+    # branch the classifier's ``max_tokens`` pattern misroutes it to context_overflow →
+    # compression, which cannot fix a burned output budget — every retry re-burns thinking.
+    # Retry ONCE with the one-shot reasoning-off override so the budget goes to the answer
+    # (mirrors the truncation-path handling in turn_truncation._continue_text).
+    if (
+        isinstance(api_error, RuntimeError)
+        and "used all output tokens on reasoning" in str(api_error)
+        and not getattr(agent, "_ephemeral_reasoning_off", False)
+        and not getattr(agent, "_reasoning_disable_rejected", False)
+    ):
+        agent._ephemeral_reasoning_off = True
+        _vlines(
+            agent,
+            "💭 Reasoning exhausted the output budget (API error) — "
+            "retrying once with thinking off...",
+        )
+        return True, active_system_prompt
     return False, active_system_prompt
 
 
