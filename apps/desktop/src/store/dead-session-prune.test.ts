@@ -125,6 +125,20 @@ describe('__runDeadSessionPrunePass', () => {
     expect(takeSessionDraft('__new__').text).toBe('brand new')
   })
 
+  it('keeps the per-instance fresh draft when the live fresh key is not a session', async () => {
+    // #66662 successors: a fresh chat today stashes under `__new__:<uuid>`, and
+    // the dead-session sweep must not probe that key over the session API —
+    // every probe 404s (the key is not a session), which would condemn the
+    // user's unsent new-chat draft to deletion seconds after boot.
+    $sessions.set([row('unrelated')])
+    stashSessionDraft('__new__:f6a3c2a0-0000-4000-8000-000000000001', 'fresh per-instance draft', [])
+    getSessionMock.mockRejectedValue(notFound())
+
+    await __runDeadSessionPrunePass()
+
+    expect(takeSessionDraft('__new__:f6a3c2a0-0000-4000-8000-000000000001').text).toBe('fresh per-instance draft')
+  })
+
   it('drops queued prompts for dead sessions and keeps live ones', async () => {
     $sessions.set([row('unrelated')])
     enqueueQueuedPrompt('dead-queue-session', { text: 'go', attachments: [] })

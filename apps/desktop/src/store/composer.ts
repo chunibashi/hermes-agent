@@ -513,12 +513,16 @@ export function takeSessionDraft(scope: string | null | undefined): SessionDraft
 export const clearSessionDraft = (scope: string | null | undefined) => stashSessionDraft(scope, '', [])
 
 /**
- * Stored draft scopes that hold content, excluding the new-chat key. The
+ * Stored draft scopes that hold content, excluding any fresh-chat key. The
  * dead-session prune sweeps these to discard drafts whose sessions no longer
- * exist on the backend; the new-chat draft is never a session reference.
+ * exist on the backend; a fresh draft is never a session reference. The
+ * exclusion must cover the per-instance `__new__:<uuid>` successors (#66662),
+ * not just the legacy `__new__` bucket — otherwise the prune probes the live
+ * new-chat key over the session API, 404s on it, and silently deletes the
+ * user's unsent draft ~2s after boot.
  */
 export function stashedDraftScopes(): string[] {
-  return [...draftsBySession.keys()].filter(key => key !== NEW_SESSION_DRAFT_KEY)
+  return [...draftsBySession.keys()].filter(key => !isFreshDraftScope(key))
 }
 
 /**
