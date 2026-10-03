@@ -70,10 +70,11 @@ function selectionOutsideComposer(): boolean {
   }
 
   const { commonAncestorContainer } = selection.getRangeAt(0)
+
   const ancestorEl =
     commonAncestorContainer instanceof Element
       ? commonAncestorContainer
-      : commonAncestorContainer?.parentElement ?? null
+      : (commonAncestorContainer?.parentElement ?? null)
 
   return !ancestorEl?.closest('[data-slot="composer-rich-input"]')
 }
@@ -110,6 +111,7 @@ function focusSelectedComposer() {
     // editor, the user is selecting text elsewhere (e.g. in a message) and
     // moving the mouse must not clear it.
     const existing = window.getSelection()
+
     const selectionLivesOutside =
       existing && !existing.isCollapsed && existing.anchorNode && !editor.contains(existing.anchorNode)
 

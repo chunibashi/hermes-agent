@@ -3836,11 +3836,10 @@ export interface Translations {
     wasPrice: string
     favorite: string
     unfavorite: string
-    favorites: string,
+    favorites: string
     customModel: string
     addCustomModelAction: string
     customModelPlaceholder: string
-
   }
 
   modelVisibility: {

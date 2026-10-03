@@ -59,12 +59,14 @@ export function skillActivityTitle(part: SkillCall, live = true): string | undef
 
     const pending = live && part.result === undefined && part.completedAt === undefined
     const actions = ops.map(op => op.action).filter((a): a is string => Boolean(a))
+
     const doneKey =
       actions.length > 0 && actions.every(a => a === 'create')
         ? 'created'
         : actions.length > 0 && actions.every(a => a === 'delete')
           ? 'deleted'
           : 'managed'
+
     const key = failed ? 'manageFailed' : pending ? 'managing' : doneKey
     const label = translateNow(`assistant.tool.skillActivity.${key}`)
 

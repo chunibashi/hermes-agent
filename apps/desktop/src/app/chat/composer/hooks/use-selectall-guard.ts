@@ -33,7 +33,7 @@ const MESSAGE_SELECTOR = [
   '[data-slot="aui_user-message-root"]',
   '[data-slot="aui_assistant-message-content"]',
   '[data-slot="aui_system-message-root"]',
-  '[data-selectable-text="true"]',
+  '[data-selectable-text="true"]'
 ].join(', ')
 
 /**
@@ -181,8 +181,7 @@ export function useSelectAllGuard(): void {
       // pointerdown in any other selectable pane marks the preview/panel as the
       // document scope. Avoid matching chat internals that happen to carry
       // `data-selectable-text` (inline log panels) — the surface check wins.
-      lastPointerDocument =
-        target && !lastPointerSurface ? (target.closest<Element>(DOCUMENT_SELECTOR) ?? null) : null
+      lastPointerDocument = target && !lastPointerSurface ? (target.closest<Element>(DOCUMENT_SELECTOR) ?? null) : null
     }
 
     const onKeyDown = (event: KeyboardEvent) => {
@@ -245,7 +244,9 @@ export function useSelectAllGuard(): void {
         root = active.closest<Element>(DOCUMENT_SELECTOR)
       }
 
-      selectAllSelectable(root ?? document.querySelector('[data-chat-surface]:not([data-chat-unfocused])') ?? document.body)
+      selectAllSelectable(
+        root ?? document.querySelector('[data-chat-surface]:not([data-chat-unfocused])') ?? document.body
+      )
     }
 
     document.addEventListener('pointerdown', onPointerDown, true)

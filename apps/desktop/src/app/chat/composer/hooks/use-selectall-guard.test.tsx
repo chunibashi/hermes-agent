@@ -6,6 +6,7 @@ import { useSelectAllGuard } from './use-selectall-guard'
 
 function Harness(): null {
   useSelectAllGuard()
+
   return null
 }
 
@@ -13,7 +14,7 @@ function Harness(): null {
 function setActiveElement(el: HTMLElement | null): void {
   Object.defineProperty(document, 'activeElement', {
     configurable: true,
-    get: () => el,
+    get: () => el
   })
 
   // jsdom does not implement isContentEditable; the guard (like Chromium)
@@ -21,7 +22,7 @@ function setActiveElement(el: HTMLElement | null): void {
   if (el) {
     Object.defineProperty(el, 'isContentEditable', {
       configurable: true,
-      get: () => el.contentEditable === 'true',
+      get: () => el.contentEditable === 'true'
     })
   }
 }
@@ -31,7 +32,10 @@ function mountGuard(): void {
 }
 
 /** Dispatch a keydown on document with the given modifiers. */
-function fireKey(key: string, mods: { ctrl?: boolean; meta?: boolean; alt?: boolean; shift?: boolean } = {}): KeyboardEvent {
+function fireKey(
+  key: string,
+  mods: { ctrl?: boolean; meta?: boolean; alt?: boolean; shift?: boolean } = {}
+): KeyboardEvent {
   const event = new KeyboardEvent('keydown', {
     key,
     bubbles: true,
@@ -39,7 +43,7 @@ function fireKey(key: string, mods: { ctrl?: boolean; meta?: boolean; alt?: bool
     ctrlKey: mods.ctrl ?? false,
     metaKey: mods.meta ?? false,
     altKey: mods.alt ?? false,
-    shiftKey: mods.shift ?? false,
+    shiftKey: mods.shift ?? false
   })
 
   document.dispatchEvent(event)

@@ -19,7 +19,12 @@ import { TimelineTimestamp } from '@/components/assistant-ui/thread/timeline-tim
 import { DelegateTool } from '@/components/assistant-ui/tool/delegate'
 import { ToolFallback, ToolGroupSlot } from '@/components/assistant-ui/tool/fallback'
 import { parseMaybeObject, toolCallFailed } from '@/components/assistant-ui/tool/fallback-model'
-import { formatElapsed, reasoningContentKey, useElapsedSeconds, useMeasuredDuration } from '@/components/chat/activity-timer'
+import {
+  formatElapsed,
+  reasoningContentKey,
+  useElapsedSeconds,
+  useMeasuredDuration
+} from '@/components/chat/activity-timer'
 import { ActivityTimerText } from '@/components/chat/activity-timer-text'
 import { GeneratedImage } from '@/components/chat/generated-image-result'
 import { SCAFFOLD_LABEL_CLASS, SCAFFOLD_META_CLASS, ScaffoldRow } from '@/components/chat/scaffold-row'
@@ -433,7 +438,9 @@ const ReasoningAccordionGroup: FC<{ children?: ReactNode; endIndex: number; star
   // A reasoning group is the message's FIRST block when no earlier part of the
   // message is reasoning. Only that block is exempt from the untimed label —
   // later blocks that were never measured still say 已思考 honestly.
-  const firstOfMessage = useAuiState(s => !s.message.parts.slice(0, Math.max(0, startIndex)).some(p => p?.type === 'reasoning'))
+  const firstOfMessage = useAuiState(
+    s => !s.message.parts.slice(0, Math.max(0, startIndex)).some(p => p?.type === 'reasoning')
+  )
 
   const contentKey = useAuiState(s => {
     const texts = s.message.parts

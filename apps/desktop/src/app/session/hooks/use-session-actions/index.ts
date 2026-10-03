@@ -3100,6 +3100,7 @@ export function useSessionActions({
       const clickedMessage = messageId
         ? ((authoritativeMessages ?? []).find(m => m.id === messageId) ?? messages.find(m => m.id === messageId))
         : undefined
+
       const branchPointRowId = clickedMessage?.rowId
 
       return forkBranch(

@@ -1817,9 +1817,7 @@ export function selectBranchMessages(
     // row; otherwise fall back to the complete authoritative transcript so
     // the branch never inherits only the summary/tail.
     if (authoritativeMessages?.length) {
-      const authoritativeClick = messageId
-        ? authoritativeMessages.findIndex(message => message.id === messageId)
-        : -1
+      const authoritativeClick = messageId ? authoritativeMessages.findIndex(message => message.id === messageId) : -1
 
       if (authoritativeClick >= 0) {
         return toBranchMessages(authoritativeMessages.slice(0, authoritativeClick + 1))

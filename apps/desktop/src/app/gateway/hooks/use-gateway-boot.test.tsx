@@ -2659,7 +2659,6 @@ describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => 
     expect($gatewayState.get()).toBe('open')
   })
 
-
   // Background self-heal (#stream-drop-no-focus): an unfocused-but-visible
   // window fires NONE of the recovery signals (no focus, no visibilitychange —
   // Electron keeps the document visible while blurred, no online). The only

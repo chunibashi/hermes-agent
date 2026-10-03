@@ -4286,7 +4286,6 @@ export const zh = defineLocale({
     customModel: '自定义模型',
     addCustomModelAction: '添加自定义模型…',
     customModelPlaceholder: '输入模型 ID，例如 openai/gpt-5'
-
   },
 
   modelVisibility: {

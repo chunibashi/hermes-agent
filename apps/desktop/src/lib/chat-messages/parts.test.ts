@@ -66,8 +66,6 @@ describe('inline-code MEDIA paths', () => {
     expect(mediaTagValues('**MEDIA:D:\\a\\b\\c\\notes.md**')).toEqual(['D:\\a\\b\\c\\notes.md'])
     expect(mediaTagValues('**MEDIA:D:\\a\\b\\c\\foo.js**')).toEqual(['D:\\a\\b\\c\\foo.js'])
     expect(mediaTagValues('MEDIA:C:\\x\\y.mjs* italic tail')).toEqual(['C:\\x\\y.mjs'])
-    expect(renderMediaTags('**MEDIA:/tmp/a.png** prose')).toBe(
-      '[Image: a.png](#media:%2Ftmp%2Fa.png) prose'
-    )
+    expect(renderMediaTags('**MEDIA:/tmp/a.png** prose')).toBe('[Image: a.png](#media:%2Ftmp%2Fa.png) prose')
   })
 })

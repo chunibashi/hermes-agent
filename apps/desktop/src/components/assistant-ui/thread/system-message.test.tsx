@@ -107,7 +107,8 @@ describe('system message timestamp text separation', () => {
     // a full-width colon; the label matcher must stop there or the entire long
     // detail is swallowed into the single-line gradient label (truncated, never
     // wrapping). Regression: desktop showed only "…技能 'git" for a long summary.
-    const text = "review:自我改进回顾：技能 'hermes-desktop-debug' 已修补 (references/rpc-contract-rowid-branch.md) · 技能 'git-management' 已修补"
+    const text =
+      "review:自我改进回顾：技能 'hermes-desktop-debug' 已修补 (references/rpc-contract-rowid-branch.md) · 技能 'git-management' 已修补"
     const { container } = render(<Harness text={text} />)
 
     const row = container.querySelector('[data-role="system"]')
