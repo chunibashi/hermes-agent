@@ -97,7 +97,9 @@ const DESKTOP_BRIDGE_HANDLERS: Record<string, (ctx: GatewayEventContext) => void
       setMessages(messages => {
         // Preferred leg: the message already knows its durable row id
         // (rehydrated transcript, or a live row that has round-tripped).
-        const byRowId = messages.find(message => message.rowId === reactedRowId)
+        const byRowId = messages.find(
+          message => message.rowId === reactedRowId || message.reactionRowId === reactedRowId
+        )
 
         if (byRowId) {
           // Overlay survives the end-of-turn resume, which rebuilds from

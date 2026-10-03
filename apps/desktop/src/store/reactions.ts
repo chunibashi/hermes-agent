@@ -59,7 +59,14 @@ export async function toggleMessageReaction(
   // rowId. Rather than disable the affordance (which made reactions invisible
   // in any active conversation), let the backend resolve the newest row of
   // this role — which is exactly the message being reacted to.
-  const rowId = message.rowId
+  //
+  // A folded bubble (narration → tool → reply, one bubble for several rows)
+  // anchors `rowId` at its FIRST source row; the reply text came from a later
+  // row. `reactionRowId` carries that later row (set by toRuntimeMessage from
+  // the last text part's sourceRowId), so the tapback addresses the prose the
+  // user actually read — not the "让我数一数" narration.
+  const targetRowId = message.reactionRowId ?? message.rowId
+  const identityRowId = message.rowId
 
   // The runtime id is unavailable while a stored conversation is being
   // resumed (and can briefly be cleared during a profile/context switch), but
@@ -99,13 +106,16 @@ export async function toggleMessageReaction(
     // while the runtime binding is still being rebuilt.
     const result = await requestForOwnedSession<MessageReactResponse>(sessionId, ambientRequest, 'message.react', {
       session_id: sessionId,
-      ...(rowId === undefined ? { newest_role: message.role } : { row_id: rowId }),
+      ...(targetRowId === undefined ? { newest_role: message.role } : { row_id: targetRowId }),
       emoji,
       author
     })
 
     // Learn the row id from the response so later toggles address it directly.
-    writeReactions(message.id, result?.reactions ?? [], result?.row_id)
+    // Only learn when the bubble carried no durable row of its own: a folded
+    // bubble's identity rowId stays its first-source-row anchor even though
+    // the reaction landed on the reply row (reconciliation matches on rowId).
+    writeReactions(message.id, result?.reactions ?? [], identityRowId === undefined ? result?.row_id : undefined)
   } catch (err) {
     // Be optimistic, THEN honest: a rejected write rolls back visibly and says
     // why, instead of the reaction quietly vanishing (desktop AGENTS.md).

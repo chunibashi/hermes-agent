@@ -425,6 +425,24 @@ export function messageCreatedAt(message: Pick<ChatMessage, 'timestamp'>, nowMs 
     : new Date(nowMs)
 }
 
+/** Last text part's source row, when the bubble renders prose from a row
+ *  later than its own anchor (a fold: narration → tool → reply). The reaction
+ *  picker targets THIS row — the text the user read — while the bubble's
+ *  `rowId` keeps anchoring reconciliation to the fold's first source row. */
+function replySourceRowId(message: ChatMessage): number | undefined {
+  if (message.role !== 'assistant') {
+    return undefined
+  }
+
+  for (const part of [...message.parts].reverse()) {
+    if (part.type === 'text' && part.sourceRowId !== undefined) {
+      return part.sourceRowId
+    }
+  }
+
+  return undefined
+}
+
 export function toRuntimeMessage(message: ChatMessage): ThreadMessage {
   const role =
     message.role === 'user' || message.role === 'assistant' || message.role === 'system' ? message.role : 'assistant'
@@ -433,8 +451,16 @@ export function toRuntimeMessage(message: ChatMessage): ThreadMessage {
 
   // Reactions and the durable row id ride metadata.custom for every role — the
   // established channel for per-message extras (attachmentRefs below).
+  const reactionRowId = replySourceRowId(message)
+
   const reactionMeta = {
     ...(message.rowId !== undefined ? { rowId: message.rowId } : {}),
+    // A fold merges a turn's narration + tool round + reply into one bubble,
+    // and the bubble's own rowId anchors the FIRST source row. The reaction
+    // picker must address the row the user actually read — the last text
+    // part's source row (the reply), not the narration — so it reads this
+    // separately from rowId.
+    ...(reactionRowId !== undefined ? { reactionRowId } : {}),
     ...(message.reactions?.length ? { reactions: message.reactions } : {})
   }
 

@@ -85,9 +85,11 @@ export function useMessageReactions(
   })
 
   const rowId = useAuiState(s => {
-    const custom = (s.message.metadata?.custom ?? {}) as { rowId?: number }
+    const custom = (s.message.metadata?.custom ?? {}) as { rowId?: number; reactionRowId?: number }
 
-    return custom.rowId
+    // A folded bubble's rowId anchors its FIRST source row (narration); the
+    // reaction must address the row the reply text actually came from.
+    return custom.reactionRowId ?? custom.rowId
   })
 
   const enabled = useStore($reactionsEnabled)
@@ -156,6 +158,7 @@ export function useTapbackDoubleClick(
       const custom = (messageRuntime.getState().metadata?.custom ?? {}) as {
         reactions?: MessageReaction[]
         rowId?: number
+        reactionRowId?: number
       }
 
       const reactions = custom.reactions ?? EMPTY_REACTIONS
@@ -168,7 +171,7 @@ export function useTapbackDoubleClick(
       commitReaction(
         messageId,
         role,
-        custom.rowId,
+        custom.reactionRowId ?? custom.rowId,
         reactions,
         mine?.emoji === DOUBLE_CLICK_REACTION ? null : DOUBLE_CLICK_REACTION,
         sessionId

@@ -1928,3 +1928,53 @@ describe('toChatMessages backend-row accounting', () => {
     expect(messages[0].serverRowSpan).toBe(3)
   })
 })
+
+describe('toChatMessages folded-turn reaction addressing', () => {
+  it('folds the reply row into the bubble without repointing its identity rowId', () => {
+    // A tool-call turn persists as narration (with the call), the tool row,
+    // then the reply row. Hydration folds them into ONE bubble; rowId must
+    // keep anchoring the FIRST source row (reconciliation matches on it).
+    const [message] = toChatMessages([
+      {
+        id: 340731,
+        role: 'assistant',
+        content: '唔…让我把月光洒在目录上，数一数',
+        timestamp: 1,
+        tool_calls: [{ id: 'tc', function: { name: 'terminal', arguments: '{}' } }]
+      },
+      { id: 340732, role: 'tool', tool_call_id: 'tc', content: 'ok', timestamp: 2 },
+      { id: 340733, role: 'assistant', content: '唔…看完了。原来是这一话的标题呀……', timestamp: 3 }
+    ])
+
+    expect(message).toMatchObject({
+      rowId: 340731,
+      serverRowSpan: 3
+    })
+    // The reply text part names its own source row, so the reaction picker
+    // can address 340733 even though the bubble is anchored at 340731.
+    const replyPart = [...message.parts].reverse().find(part => part.type === 'text')
+    expect(replyPart?.sourceRowId).toBe(340733)
+  })
+
+  it('carries reactions persisted on the folded reply row up to the bubble', () => {
+    const [message] = toChatMessages([
+      {
+        id: 1,
+        role: 'assistant',
+        content: 'Let me check.',
+        timestamp: 1,
+        tool_calls: [{ id: 'tc', function: { name: 'terminal', arguments: '{}' } }]
+      },
+      { id: 2, role: 'tool', tool_call_id: 'tc', content: 'ok', timestamp: 2 },
+      {
+        id: 3,
+        role: 'assistant',
+        content: 'The answer.',
+        timestamp: 3,
+        display_metadata: { reactions: [{ emoji: '🤮', author: 'user', at: 4 }] }
+      }
+    ])
+
+    expect(message.reactions).toMatchObject([{ emoji: '🤮', author: 'user' }])
+  })
+})

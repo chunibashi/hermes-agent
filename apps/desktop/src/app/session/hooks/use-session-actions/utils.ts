@@ -230,6 +230,9 @@ const COMPARED_FIELDS = [
   'interim',
   'interrupted',
   'reactions',
+  // Folded-bubble reaction target: the reply row the picker addresses.
+  // A change repaints the bubble's reaction state (which row owns it).
+  'reactionRowId',
   'timestamp',
   'completedAt',
   // Turn wall-clock duration — stamps the visible "⏱ 38s" badge, so a change
@@ -1756,11 +1759,14 @@ export function selectBranchMessages(
       const authoritativeClick = messageId
         ? authoritativeMessages.findIndex(message => message.id === messageId)
         : -1
+
       if (authoritativeClick >= 0) {
         return toBranchMessages(authoritativeMessages.slice(0, authoritativeClick + 1))
       }
+
       return toBranchMessages(authoritativeMessages)
     }
+
     return toBranchMessages(localMessages)
   }
 

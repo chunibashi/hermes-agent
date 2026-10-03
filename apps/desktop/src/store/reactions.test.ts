@@ -129,4 +129,22 @@ describe('toggleMessageReaction session binding', () => {
     expect(reactionTestState.requestForOwnedSession).not.toHaveBeenCalled()
     expect(reactionTestState.gateway.request).not.toHaveBeenCalled()
   })
+
+  it('addresses the reply row of a folded bubble via reactionRowId, not the narration rowId', async () => {
+    reactionTestState.activeSessionId.set('session-1')
+
+    await toggleMessageReaction(
+      // A folded turn: rowId anchors the first source row (the "让我数一数"
+      // narration), reactionRowId names the reply row the user actually read.
+      { id: 'folded', role: 'assistant', rowId: 340731, reactionRowId: 340733, parts: [] },
+      '🤮'
+    )
+
+    expect(reactionTestState.requestForOwnedSession).toHaveBeenCalledWith(
+      'session-1',
+      expect.any(Function),
+      'message.react',
+      expect.objectContaining({ session_id: 'session-1', row_id: 340733, emoji: '🤮' })
+    )
+  })
 })

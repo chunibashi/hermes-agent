@@ -236,6 +236,26 @@ function messageReactions(metadata: SessionMessage['display_metadata']): Message
   )
 }
 
+/** Fold one author's reaction set into another — tapback semantics: one per
+ *  author per message, later rows win (a reply row supersedes its narration). */
+function mergeReactionsByAuthor(primary: MessageReaction[] | undefined, folded: MessageReaction[]): MessageReaction[] {
+  if (!folded.length) {
+    return primary ?? []
+  }
+
+  const byAuthor = new Map<string, MessageReaction>()
+
+  for (const reaction of primary ?? []) {
+    byAuthor.set(reaction.author, reaction)
+  }
+
+  for (const reaction of folded) {
+    byAuthor.set(reaction.author, reaction)
+  }
+
+  return [...byAuthor.values()]
+}
+
 // Only parse producer-owned boundaries, never render the model's task preamble.
 // Older backends can persist an unwrapped result rather than an envelope.
 function asyncResultBody(content: string): string | undefined {
@@ -562,6 +582,20 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
       const activeHasToolCall = Boolean(activeAssistant?.parts.some(part => part.type === 'tool-call'))
 
       if (activeAssistant && (currentHasToolCall || activeHasToolCall)) {
+        // A folded bubble renders one reply that spans several backend rows
+        // (narration + tool round + answer). Keep the bubble's own rowId as
+        // its identity anchor (reconciliation/graft match rows by it), but
+        // carry the folded row's reactions up — a reaction persisted on the
+        // reply row must not vanish on the next hydrate. The reaction PICKER
+        // targets the reply row separately (store/reactions.ts reads the
+        // last text part's sourceRowId), so a folded rowId that points at the
+        // narration no longer mis-addresses the tapback.
+        const foldedReactions = messageReactions(message.display_metadata)
+
+        if (foldedReactions.length) {
+          activeAssistant.reactions = mergeReactionsByAuthor(activeAssistant.reactions, foldedReactions)
+        }
+
         activeAssistant.parts = [...activeAssistant.parts, ...parts]
         activeAssistant.durableComplete = durableComplete
         activeAssistant.timestamp = earliestTimestamp(
