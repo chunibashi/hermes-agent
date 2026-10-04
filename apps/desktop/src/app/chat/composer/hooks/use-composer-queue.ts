@@ -2,7 +2,6 @@ import { useStore } from '@nanostores/react'
 import { type RefObject, useCallback, useEffect, useRef, useState } from 'react'
 
 import { useI18n } from '@/i18n'
-import { isSlashCommandText } from '@/lib/chat-runtime'
 import { triggerHaptic } from '@/lib/haptics'
 import { useSessionSlice } from '@/lib/use-session-slice'
 import { type ComposerAttachment, freezeComposerTransportPayload } from '@/store/composer'
@@ -219,19 +218,8 @@ export function useComposerQueue({
         return false
       }
 
-      // Editing a queued entry into a slash-command + attachment combo would
-      // produce an undrainable entry (submitText rejects it on every attempt).
-      // Refuse the save so the queue can never hold an entry that livelocks.
-      if (isSlashCommandText(text) && next.length) {
-        notify({
-          kind: 'warning',
-          title: t.desktop.slashCommandIgnoredTitle,
-          message: t.desktop.slashCommandIgnoredBody
-        })
-
-        return false
-      }
-
+      // Editing a queued entry keeps its attachments — slash commands may
+      // ride alongside media (runSlash submits the resolved payload with them).
       const frozen = text.trim() ? freezeQueuedDraftText(text, t.composer) : { text }
 
       if (!frozen) {
@@ -264,22 +252,8 @@ export function useComposerQueue({
       return false
     }
 
-    // Slash commands cannot ride alongside attachments — the drain path would
-    // reject the entry on every attempt (submitText warns + returns false) and
-    // the queue would livelock. Refuse to enqueue it in the first place.
-    if (isSlashCommandText(text) && attachments.length) {
-      notify({
-        kind: 'warning',
-        title: t.desktop.slashCommandIgnoredTitle,
-        message: t.desktop.slashCommandIgnoredBody
-      })
-
-      return false
-    }
-
-    // Freeze `@terminal:` chips at enqueue. Persist the chip form; keep the
-    // fenced selection in the runtime map so drain never re-resolves the live
-    // label map and localStorage never stores terminal CONTENTS (#77078).
+    // Slash commands may ride alongside attachments — the drain path submits
+    // the command's resolved payload together with the entry's media.
     const frozen = text.trim() ? freezeQueuedDraftText(text, t.composer) : { text }
 
     if (!frozen) {

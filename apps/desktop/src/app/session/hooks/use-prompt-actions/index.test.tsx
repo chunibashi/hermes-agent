@@ -6408,19 +6408,20 @@ describe('usePromptActions stale multi-window guard (#65047)', () => {
     )
   })
 
-  it('refuses a slash command sent alongside an attachment instead of silently degrading to a chat message (#81798)', async () => {
+  it('executes a slash command alongside an attachment, carrying the media into the resolved payload (#81798)', async () => {
     // The attachment's refText gets prepended ahead of the typed text by
     // buildContextText, so the merged wire text no longer starts with "/".
-    // Before the fix, submitText's attachment-count gate silently fell through
-    // to a normal prompt.submit — /goal (and every other slash command) with an
-    // attachment vanished into a regular chat message with no feedback.
+    // The slash command must still dispatch (slash.exec), and its resolved
+    // skill payload must submit WITH the media — not degrade into a plain
+    // chat message and not refuse the send.
     const requestGateway = vi.fn(async (method: string) => {
       if (method === 'slash.exec') {
-        throw new Error('slash.exec must never be called when an attachment is present')
-      }
-
-      if (method === 'prompt.submit') {
-        throw new Error('prompt.submit must never be called for a slash command')
+        return {
+          type: 'skill',
+          name: 'goal',
+          message: 'Align every task with the handoff doc.',
+          display: '/goal align with the handoff doc'
+        } as never
       }
 
       return {} as never
@@ -6438,14 +6439,32 @@ describe('usePromptActions stale multi-window guard (#65047)', () => {
           kind: 'file',
           label: 'handoff.md',
           path: '/Users/alice/handoff.md',
-          refText: '@file:`/Users/alice/handoff.md`'
+          refText: '@file:`/Users/alice/handoff.md`',
+          // Already staged on the live runtime → syncAttachmentsForSubmit
+          // passes it through without a file.attach round-trip.
+          attachedSessionId: RUNTIME_SESSION_ID
         }
       ]
     })
 
-    expect(ok).toBe(false)
-    expect(requestGateway).not.toHaveBeenCalled()
-    expect($notifications.get()).toEqual(
+    // The command runs — it no longer degrades into a plain chat message.
+    expect(ok).toBe(true)
+    expect(requestGateway).toHaveBeenCalledWith(
+      'slash.exec',
+      expect.objectContaining({ command: 'goal align with the handoff doc' })
+    )
+    // The attachment rides the resolved skill payload: prompt.submit carries
+    // the @file: ref ahead of the expanded skill body.
+    expect(requestGateway).toHaveBeenCalledWith(
+      'prompt.submit',
+      expect.objectContaining({
+        session_id: RUNTIME_SESSION_ID,
+        text: expect.stringContaining('@file:`/Users/alice/handoff.md`')
+      }),
+      expect.anything()
+    )
+    // No refusal toast.
+    expect($notifications.get()).not.toEqual(
       expect.arrayContaining([expect.objectContaining({ message: en.desktop.slashCommandIgnoredBody })])
     )
   })

@@ -20,7 +20,7 @@ import { triggerHaptic } from '@/lib/haptics'
 import { clearClarifyRequest } from '@/store/clarify'
 import type { ComposerAttachment } from '@/store/composer'
 import { resetSessionBackground } from '@/store/composer-status'
-import { notify, notifyError } from '@/store/notifications'
+import { notifyError } from '@/store/notifications'
 import { clearPreviewArtifacts } from '@/store/preview-status'
 import { clearAllPrompts } from '@/store/prompts'
 import { $sessions, knownSessionOwner, ownerLookupSessionRows, sessionMatchesStoredId } from '@/store/session'
@@ -326,18 +326,13 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
       listTileSession(visibleText)
 
       if (isSlashCommandText(visibleText)) {
-        if (attachments.length) {
-          notify({
-            kind: 'warning',
-            title: copy.slashCommandIgnoredTitle,
-            message: copy.slashCommandIgnoredBody
-          })
-
-          return false
-        }
-
         triggerHaptic('selection')
-        await sessionTileDelegate()?.executeSlash(visibleText, runtimeIdRef.current)
+        // Attachments ride the command — forward them so the tile's resolved
+        // skill/send payload submits with the media (queue drains hand them
+        // over explicitly; the composer path reads the tile attachment store).
+        await sessionTileDelegate()?.executeSlash(visibleText, runtimeIdRef.current, {
+          ...(attachments.length ? { attachments } : {})
+        })
 
         return true
       }

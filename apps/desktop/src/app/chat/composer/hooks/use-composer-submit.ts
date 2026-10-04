@@ -2,7 +2,7 @@ import { SLASH_COMMAND_RE } from '@hermes/shared'
 import { type RefObject, useLayoutEffect, useRef } from 'react'
 
 import { usePaneVisible } from '@/components/pane-shell/pane-visibility'
-import { translateNow, useI18n } from '@/i18n'
+import { translateNow } from '@/i18n'
 import { isSlashCommandText } from '@/lib/chat-runtime'
 import { isSideTaskSlashCommand } from '@/lib/desktop-slash-commands'
 import { triggerHaptic } from '@/lib/haptics'
@@ -91,8 +91,6 @@ export function useComposerSubmit({
   const paneVisible = usePaneVisible()
   const scope = useComposerScope()
   const surfaceId = useComposerSurfaceId()
-  const { t } = useI18n()
-  const copy = t.desktop
 
   // Shared send primitive: fire onSubmit, and if the gateway rejects (accepted
   // === false) or throws, re-stash the draft so the words survive. Repaint it
@@ -297,19 +295,6 @@ export function useComposerSubmit({
       // /send directives).  Queuing them would make every slash command wait
       // for the current turn to finish, which is how the TUI never behaves.
       if (isSlashCommandText(text)) {
-        if (attachments.length) {
-          // Slash commands cannot ride alongside attachments — warn the user
-          // instead of silently queuing the payload (which would then reach the
-          // idle path and be submitted as plain text with no command execution).
-          notify({
-            kind: 'warning',
-            title: copy.slashCommandIgnoredTitle,
-            message: copy.slashCommandIgnoredBody
-          })
-
-          return
-        }
-
         triggerHaptic('submit')
         clearDraft()
         dispatchSubmit(text)

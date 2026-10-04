@@ -24,7 +24,7 @@ import { applyReasoningSlashResult, reasoningSlashParams } from '@/lib/reasoning
 import { setSessionYolo } from '@/lib/yolo-session'
 import { openCommandPalettePage } from '@/store/command-palette'
 import { markCompressDeferred } from '@/store/compaction'
-import { setComposerDraft } from '@/store/composer'
+import { type ComposerAttachment, setComposerDraft } from '@/store/composer'
 import { applyGoalStatusText } from '@/store/goals'
 import { dismissNotification, notify, notifyError } from '@/store/notifications'
 import { setPetScale } from '@/store/pet-gallery'
@@ -132,6 +132,8 @@ interface SlashActionCtx {
   name: string
   recordInput: boolean
   sessionHint?: string
+  /** Attachments riding the command (composer / queue drain / tile submit). */
+  attachments?: ComposerAttachment[]
 }
 
 interface SlashCommandDeps {
@@ -193,7 +195,10 @@ export function useSlashCommand(deps: SlashCommandDeps) {
   const compressInFlightRef = useRef(new Set<string>())
 
   return useCallback(
-    async (rawCommand: string, options?: { sessionId?: string; recordInput?: boolean; typed?: boolean }) => {
+    async (
+      rawCommand: string,
+      options?: { sessionId?: string; recordInput?: boolean; typed?: boolean; attachments?: ComposerAttachment[] }
+    ) => {
       // Resolve the session this command targets through the SHARED ladder that
       // submit.ts uses. A slash command runs backend commands against a runtime
       // session, and per-session state (`/goal`, `/usage`, `/status`) is keyed by
@@ -312,7 +317,7 @@ export function useSlashCommand(deps: SlashCommandDeps) {
           }
 
           if (dispatch.type === 'alias') {
-            await runSlash(`/${dispatch.target}${arg ? ` ${arg}` : ''}`, sessionId, false)
+            await runSlash(`/${dispatch.target}${arg ? ` ${arg}` : ''}`, sessionId, false, ctx.attachments)
 
             return
           }
@@ -396,7 +401,12 @@ export function useSlashCommand(deps: SlashCommandDeps) {
           // its kickoff as a user message into whatever conversation was on
           // screen. Every other target the dispatcher serves (tile, background
           // queue drain, a session created by this very call) had the same leak.
-          await submitPromptText(message, { sessionId, storedSessionId, displayText })
+          await submitPromptText(message, {
+            sessionId,
+            storedSessionId,
+            displayText,
+            ...(ctx.attachments?.length ? { attachments: ctx.attachments } : {})
+          })
         }
 
         try {
@@ -1329,7 +1339,12 @@ export function useSlashCommand(deps: SlashCommandDeps) {
 
       // The whole dispatcher: resolve the command's desktop surface, then act on
       // its kind. No per-command ladder — behavior lives in the registry.
-      async function runSlash(commandText: string, sessionHint?: string, recordInput = true): Promise<void> {
+      async function runSlash(
+        commandText: string,
+        sessionHint?: string,
+        recordInput = true,
+        attachments?: ComposerAttachment[]
+      ): Promise<void> {
         const command = commandText.trim()
         const { name, arg } = parseSlashCommand(command)
 
@@ -1363,7 +1378,15 @@ export function useSlashCommand(deps: SlashCommandDeps) {
           }).catch(() => undefined)
         }
 
-        const ctx: SlashActionCtx = { arg, command, name, recordInput, sessionHint }
+        const ctx: SlashActionCtx = {
+          arg,
+          command,
+          name,
+          recordInput,
+          sessionHint,
+          ...(attachments ? { attachments } : {})
+        }
+
         const surface = resolveDesktopCommand(`/${name}`)?.surface
 
         switch (surface?.kind) {
@@ -1389,7 +1412,7 @@ export function useSlashCommand(deps: SlashCommandDeps) {
         }
       }
 
-      await runSlash(rawCommand, options?.sessionId, options?.recordInput ?? true)
+      await runSlash(rawCommand, options?.sessionId, options?.recordInput ?? true, options?.attachments)
     },
     [
       activeSessionIdRef,

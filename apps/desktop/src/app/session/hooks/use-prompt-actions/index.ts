@@ -629,23 +629,18 @@ export function usePromptActions({
   const submitText = useCallback(
     async (rawText: string, options?: SubmitTextOptions) => {
       const visibleText = sanitizeComposerInput(rawText).trim()
-      const attachments = options?.attachments ?? $composerAttachments.get()
 
       if (isSlashCommandText(visibleText)) {
-        if (attachments.length) {
-          notify({
-            kind: 'warning',
-            title: copy.slashCommandIgnoredTitle,
-            message: copy.slashCommandIgnoredBody
-          })
-
-          return false
-        }
-
         triggerHaptic('selection')
         // Forward the explicit target (background queue drain, tile) — dropping
         // it ran the command against whatever chat happened to be in front.
-        await executeSlashCommand(visibleText, options?.sessionId ? { sessionId: options.sessionId } : undefined)
+        // Attachments ride the command: runSlash's resolved skill/send payload
+        // submits with the composer's attachments (or the explicit ones carried
+        // in from a queue drain / tile submit).
+        await executeSlashCommand(visibleText, {
+          ...(options?.sessionId ? { sessionId: options.sessionId } : {}),
+          ...(options?.attachments?.length ? { attachments: options.attachments } : {})
+        })
 
         return true
       }
