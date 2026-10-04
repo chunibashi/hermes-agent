@@ -6063,11 +6063,6 @@ export const frOverrides = {
     editTurnUnavailable:
       "Ce tour ne figure plus dans l'historique du serveur (il a peut-être été supprimé lors de la compaction).",
     resumeFailed: 'Échec de la reprise',
-    readOnlyTranscriptTitle: 'Ouverte en lecture seule',
-    readOnlyTranscriptBody:
-      "Aucun backend connecté ne revendique encore cette ancienne conversation ; elle est donc ouverte comme transcription en lecture seule. Son historique est intact, mais l'envoi reste désactivé jusqu'à ce qu'un backend la prenne en charge.",
-    readOnlyTranscriptSendBlocked:
-      "Cette conversation est ouverte comme transcription en lecture seule — l'envoi est désactivé.",
     resumeStrandedTitle: 'Impossible de charger cette session',
     resumeStrandedBody:
       "La connexion à cette session a échoué et les nouvelles tentatives automatiques ont été abandonnées. Vérifiez que la Gateway est en cours d'exécution, puis réessayez.",

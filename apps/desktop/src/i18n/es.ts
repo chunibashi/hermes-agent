@@ -6040,11 +6040,6 @@ export const esOverrides = {
     editFailed: 'No se pudo editar',
     editTurnUnavailable: 'Este turno ya no está en el historial del servidor (puede haber sido comprimido).',
     resumeFailed: 'No se pudo reanudar',
-    readOnlyTranscriptTitle: 'Abierto en modo de solo lectura',
-    readOnlyTranscriptBody:
-      'Ningún backend conectado reclama todavía este chat antiguo, así que se abrió como transcripción de solo lectura. Su historial está intacto; el envío está desactivado hasta que un backend lo reclame.',
-    readOnlyTranscriptSendBlocked:
-      'Este chat está abierto como transcripción de solo lectura: el envío está desactivado.',
     resumeStrandedTitle: 'No se pudo cargar esta sesión',
     resumeStrandedBody:
       'No se pudo conectar con esta sesión y se agotaron los reintentos automáticos. Comprueba que el gateway esté en ejecución y vuelve a intentarlo.',

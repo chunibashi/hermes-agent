@@ -5,26 +5,14 @@ import {
   graftRefreshedTailOntoBackfill,
   olderPageReader
 } from '@/app/chat/transcript-backfill'
-import {
-  fetchStoredTranscriptAcrossBackends,
-  getLatestSessionMessages,
-  getSession,
-  PROMPT_SUBMIT_REQUEST_TIMEOUT_MS
-} from '@/hermes'
+import { getLatestSessionMessages, PROMPT_SUBMIT_REQUEST_TIMEOUT_MS } from '@/hermes'
 import { translateNow } from '@/i18n/runtime'
 import { type ChatMessage, chatMessageText, toChatMessages } from '@/lib/chat-messages'
 import { markReasoningEffortPending } from '@/lib/chat-runtime'
 import { profileScopeForSessionOwner, transcriptRefreshIfBehind } from '@/lib/stale-transcript-guard'
 import { noteMessageSent } from '@/store/desktop-metrics'
 import { notify } from '@/store/notifications'
-import {
-  isReadOnlyRuntimeId,
-  isStoredTranscriptReadOnly,
-  readOnlyRuntimeIdFor,
-  resumeWithStoredTranscriptFallback
-} from '@/store/read-only-transcript'
 import { knownSessionOwner, ownerLookupSessionRows } from '@/store/session'
-import { assertSessionOwnerResolved } from '@/store/session-owner-resolution'
 import { requestForSessionProfile, type SessionOwnerScope } from '@/store/session-request-router'
 import {
   $sessionTiles,
@@ -34,7 +22,6 @@ import {
 } from '@/store/session-states'
 import type { SessionResumeResult } from '@/types/hermes'
 
-import { refreshCronRunWriteGate } from '../../cron/open-cron-run'
 import type { usePromptActions } from '../../session/hooks/use-prompt-actions'
 import { singleFlightSessionResume } from '../../session/hooks/use-prompt-actions/single-flight-resume'
 import { markSessionRecentlyInterrupted, withSessionNotFoundResume } from '../../session/hooks/use-prompt-actions/utils'
@@ -284,11 +271,6 @@ export function useSessionTileDelegate({
         return true
       },
       interruptSession: async runtimeId => {
-        // Read-only stored-transcript tiles have no live turn to interrupt.
-        if (isReadOnlyRuntimeId(runtimeId)) {
-          return
-        }
-
         // Same cooldown as the primary chat's Stop (#83855): the gateway may
         // still be winding down after this interrupt, so a quick edit/resend
         // on the tile must go interrupt-first even though busy already reads
@@ -392,62 +374,17 @@ export function useSessionTileDelegate({
           return existing
         }
 
-        // #94724 no-owner recovery: dispatching the resume through the same
-        // fail-closed gate as the window's RPC dispatcher keeps an unknown
-        // owner off the ambient socket, and the wrapper opens the stored
-        // transcript read-only instead of dead-ending the tile — the id-only
-        // REST read routes no live session at all.
-        const outcome = await resumeWithStoredTranscriptFallback(
-          storedSessionId,
-          () => {
-            assertSessionOwnerResolved(owner, { method: 'session.resume', sessionId: storedSessionId })
-
-            return singleFlightSessionResume(storedSessionId, () =>
-              requestForSessionProfile<SessionResumeResult>(owner, requestGateway, 'session.resume', {
-                session_id: storedSessionId,
-                cols: 96,
-                omit_messages: true,
-                ...(owner ? { profile: typeof owner === 'string' ? owner : owner.profile } : {})
-              })
-            )
-          },
-          async () => {
-            const stored = (await prefetchPromise) ?? (await fetchStoredTranscriptAcrossBackends(storedSessionId))
-
-            if (!stored) {
-              throw new Error('stored transcript unavailable on every reachable backend')
-            }
-
-            return stored
-          }
-        )
-
-        const prefetch = await prefetchPromise
-
-        if (outcome.mode === 'read-only') {
-          const readOnlyId = readOnlyRuntimeIdFor(storedSessionId)
-
-          updateSessionState(
-            readOnlyId,
-            state => ({
-              ...state,
-              busy: false,
-              awaitingResponse: false,
-              messages: state.messages.length > 0 ? state.messages : toChatMessages(outcome.transcript?.messages ?? [])
-            }),
-            storedSessionId
+        const [prefetch, resumed] = await Promise.all([
+          prefetchPromise,
+          singleFlightSessionResume(storedSessionId, () =>
+            requestForSessionProfile<SessionResumeResult>(owner, requestGateway, 'session.resume', {
+              session_id: storedSessionId,
+              cols: 96,
+              omit_messages: true,
+              ...(owner ? { profile: typeof owner === 'string' ? owner : owner.profile } : {})
+            })
           )
-
-          notify({
-            kind: 'info',
-            title: translateNow('desktop.readOnlyTranscriptTitle'),
-            message: translateNow('desktop.readOnlyTranscriptBody')
-          })
-
-          return readOnlyId
-        }
-
-        const resumed = outcome.resumed
+        ])
 
         const runtimeId = resumed?.session_id
 
@@ -484,25 +421,6 @@ export function useSessionTileDelegate({
       },
       submitToSession: async (runtimeId, text) => {
         const storedSessionId = storedSessionIdForRuntime(runtimeId)
-
-        // A cron run's write gate is re-evaluated against its authoritative
-        // row before the send (#88443) — the same gate as the primary chat's
-        // `submit`, so a verdict never latches and a restored tile is gated.
-        if (storedSessionId && !isReadOnlyRuntimeId(runtimeId)) {
-          await refreshCronRunWriteGate(storedSessionId, id =>
-            ownerForStoredSession(id).then(owner => getSession(id, profileScopeForSessionOwner(owner)))
-          )
-        }
-
-        // A read-only stored-transcript tile has no live runtime to submit
-        // into (#94724), and a never-closed cron run the scheduler no longer
-        // owns (#88443) stays closed to writes when it is opened as a tile.
-        // Refuse with the explanation instead of minting a misrouted prompt.
-        if (isReadOnlyRuntimeId(runtimeId) || isStoredTranscriptReadOnly(storedSessionId)) {
-          notify({ kind: 'info', message: translateNow('desktop.readOnlyTranscriptSendBlocked') })
-
-          return { runtimeSessionId: runtimeId, storedSessionId: null }
-        }
 
         if (storedSessionId) {
           const cached = sessionStateByRuntimeIdRef.current.get(runtimeId)
