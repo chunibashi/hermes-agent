@@ -11,7 +11,13 @@ import {
 import { defaultNewSessionTarget, prepareDefaultNewSession } from '@/app/session/new-session-route'
 import { revealTreePane } from '@/components/pane-shell/tree/store'
 import { setWorkspaceScope } from '@/components/pane-shell/workspace-scope'
-import { deleteSession, getAllSessionMessages, getLatestSessionMessages, setSessionArchived } from '@/hermes'
+import {
+  deleteSession,
+  fetchStoredTranscriptAcrossBackends,
+  getAllSessionMessages,
+  getLatestSessionMessages,
+  setSessionArchived
+} from '@/hermes'
 import { useI18n } from '@/i18n'
 import {
   type ChatMessage,
@@ -62,6 +68,7 @@ import {
 import { $projectScope } from '@/store/project-scope'
 import { projectProfile, resolveNewSessionCwd } from '@/store/projects'
 import { clearAllPrompts, receiveApprovalRequest, replayPendingApproval } from '@/store/prompts'
+import { clearStoredTranscriptReadOnly, markStoredTranscriptReadOnly } from '@/store/read-only-transcript'
 import {
   $activeSessionStoredIdRotation,
   $connection,
@@ -108,6 +115,7 @@ import {
 } from '@/store/session'
 import { clearSessionControl } from '@/store/session-control'
 import { $focusedStoredSessionId } from '@/store/session-focus'
+import { isSessionOwnerResolutionError } from '@/store/session-owner-resolution'
 import {
   beginSessionMutation,
   endSessionMutation,
@@ -693,18 +701,7 @@ export function useSessionActions({
         ? normalizeNewChatWorkspaceTarget(draftOptions.workspaceTarget)
         : undefined
 
-      // Rotate the fresh-draft key only when the user is ALREADY composing on
-      // a fresh draft — that is a deliberate SECOND New Chat, which must not
-      // inherit the first chat's unsent text (#66662). Entering New Chat from
-      // a real session (sidebar "New session" / ⌘N after switching away) is a
-      // RETURN to the same draft the user left: rotating there swaps in an
-      // empty key while the pending text sits orphaned under the old one, and
-      // no surface ever opens the old key again ("switch to a session, come
-      // back within moments, my draft is gone"). The swap effect
-      // (useComposerDraft) restores the draft onto the unchanged key.
-      const alreadyOnFreshDraft = !activeSessionIdRef.current && !selectedStoredSessionIdRef.current
-
-      if (draftOptions.rotateFreshDraftKey !== false && alreadyOnFreshDraft) {
+      if (draftOptions.rotateFreshDraftKey !== false) {
         rotateFreshDraftKey()
       }
 
@@ -2464,6 +2461,10 @@ export function useSessionActions({
 
         setActiveSessionId(resumed.session_id)
         activeSessionIdRef.current = resumed.session_id
+        // A live resume proves the owner routed — retire any read-only latch
+        // a previous no-owner open left behind (#94724: the backfill stamped
+        // the row, or a topology change made the owner resolvable again).
+        clearStoredTranscriptReadOnly(storedSessionId)
         const pendingApproval = restorePendingApproval(resumed, resumed.session_id)
         const pendingClarifyState = restorePendingClarifyFromSnapshot(resumed, resumed.session_id, resumeStartedAt)
         const pendingClarify = pendingClarifyState.request
@@ -2632,6 +2633,47 @@ export function useSessionActions({
           return
         }
 
+        // #94724 no-owner recovery: the owner ladder failed closed — which is
+        // CORRECT under registry topology — but the stored transcript may be
+        // fully intact in some backend's state.db. If the ambient REST
+        // fallback above didn't already paint it, probe the registered
+        // backends READ-ONLY (id-only GET; no live session is routed or
+        // minted anywhere). When history is reachable, open the session
+        // read-only instead of dead-ending on the resolution error: writes
+        // stay blocked, and a later resume (after the single-match owner
+        // backfill stamps the row) upgrades it back to a live session.
+        if (isSessionOwnerResolutionError(err)) {
+          let painted = !fallbackError && viewMessagesForReconcile().length > 0
+
+          if (!painted) {
+            const stored = await fetchStoredTranscriptAcrossBackends(storedSessionId).catch(() => null)
+
+            if (!isCurrentResume()) {
+              return
+            }
+
+            if (stored && stored.messages.length > 0) {
+              const previousMessages = resumedSameSelectedSession
+                ? preserveLocalPendingTurnMessages(viewMessagesForReconcile(), resumeStartMessages)
+                : viewMessagesForReconcile()
+
+              setMessages(reconcileAuthoritativeMessages(stored.messages, previousMessages))
+              painted = true
+            }
+          }
+
+          if (painted) {
+            markStoredTranscriptReadOnly(storedSessionId)
+            notify({
+              kind: 'info',
+              title: copy.readOnlyTranscriptTitle,
+              message: copy.readOnlyTranscriptBody
+            })
+
+            return
+          }
+        }
+
         // The session is genuinely gone (deleted, or a stale id from a wiped /
         // rotated backend): the resume RPC and the authoritative REST transcript
         // both 404. There's nothing to recover — silently drop to a fresh draft
@@ -2744,7 +2786,6 @@ export function useSessionActions({
       cwd?: string,
       profile?: null | string,
       branchCount?: number,
-      branchPointRowId?: number,
       ownerRoute?: SessionOwnerRoute,
       idempotencyKey?: string
     ): Promise<boolean> => {
@@ -2804,14 +2845,6 @@ export function useSessionActions({
         if (!createFlight) {
           const branchParams = {
             session_id: sourceSessionId,
-            // Prefer the clicked bubble's durable row id over a count: the
-            // backend truncates its OWN lineage display projection, which can
-            // differ in length from the REST tip-only projection the count
-            // was derived from (context-compressed sessions) — a count then
-            // slices the wrong window and the branch inherits duplicated or
-            // missing history. row_id addresses the same logical row in both
-            // projections.
-            ...(branchPointRowId !== undefined ? { row_id: branchPointRowId } : {}),
             // Stable per-attempt key: a lost-response retry of session.branch /
             // session.branch_whole returns the SAME child (#65410).
             idempotency_key: key,
@@ -2832,7 +2865,7 @@ export function useSessionActions({
           createFlight = (
             sourceSessionId
               ? requestBranchGateway<SessionCreateResponse>(
-                  branchMessages.length ? 'session.branch' : 'session.branch_whole',
+                  branchCount === undefined ? 'session.branch_whole' : 'session.branch',
                   branchParams
                 ).catch(err => {
                   if (!isMissingRpcMethod(err)) {
@@ -2950,17 +2983,8 @@ export function useSessionActions({
         // unconditionally). resumeSession reuses the runtime warm-cached above
         // (ensureSessionState/updateSessionState) instead of an extra resume RPC.
         if (parentStoredId !== null && selectedStoredSessionIdRef.current === parentStoredId) {
-          // Resume BEFORE navigating the address bar: resumeSession captures
-          // getRouteToken() at entry and bails via isCurrentResume() when the
-          // route changes mid-await. navigate() schedules a location update
-          // that React only commits after the current task yields, so calling
-          // it first makes the resume see a stale routeToken and return early
-          // — the branch's warm-cached 11 rows never stage to the view
-          // (syncSessionStateToView only stages for the active runtime), and
-          // the pane keeps showing the parent's full transcript under the new
-          // branch route ("branch shows the whole conversation").
-          await resumeSession(routedSessionId)
           navigate(sessionRoute(routedSessionId), { replace: true })
+          await resumeSession(routedSessionId)
         } else {
           // Carry the exact owner onto the tile: its persisted ownerRoute is
           // what pins the owning backend's socket in the gateway keep-set
@@ -3001,7 +3025,6 @@ export function useSessionActions({
                 cwd,
                 profile,
                 branchCount,
-                branchPointRowId,
                 ownerRoute,
                 key
               )
@@ -3100,51 +3123,13 @@ export function useSessionActions({
 
       clearNotifications()
 
-      // The open chat's owning profile, NOT the picker's / launch profile —
-      // /profile only retargets new chats, so a branch of an existing thread
-      // must stay on that thread's backend (cache hit for an open session).
-      // Pass the clicked bubble's durable row id so the backend truncates its
-      // lineage projection at the SAME logical row the REST read mapped to —
-      // a count can point elsewhere when the projections differ in length
-      // (compressed lineage), duplicating or dropping history.
-      // Resolve the row id from the CLICKED message directly (prefer authoritative,
-      // fall back to the live atom), not from the last branchMessages element —
-      // when authoritative is unavailable, branchMessages may end at a different
-      // row (the local atom's tail), causing the backend to amputate the branch.
-      const clickedMessage = messageId
-        ? ((authoritativeMessages ?? []).find(m => m.id === messageId) ?? messages.find(m => m.id === messageId))
-        : undefined
-      const branchPointRowId = clickedMessage?.rowId
-
       return forkBranch(
         branchMessages,
         runtimeId,
         storedSessionId,
         cwd?.trim(),
         profile,
-        // Count semantics, merged across the branch paths:
-        //
-        // 1. row_id is the PRIMARY truncation driver (local lineage fix):
-        //    the backend cuts its OWN display projection at that durable row,
-        //    so the count stays omitted for live bubbles whose projection
-        //    length may differ from the local atom's (compacted lineage).
-        // 2. count is a FALLBACK truncation for PERSISTED sessions (tile
-        //    transcripts): when the clicked message is not the last one, the
-        //    branch must be amputated to the clicked prefix even if the
-        //    renderer never hydrated an authoritative transcript — the
-        //    backend then cuts by prefix length. Sessions without a stored id
-        //    and clicks on the final message both keep the count omitted.
-        // Sending a count derived from a potentially truncated localMessages
-        // would amputate the branch when the REST authoritative read is
-        // unavailable (the local atom may be a compacted model projection).
-        // The backend reads its own full display projection via
-        // get_resume_conversations and cuts at the row_id; no count means no
-        // fallback truncation when row_id is absent (unfiltered row for a
-        // tool/empty click target).
-        storedSessionId && messageId && branchMessages.length < (authoritativeMessages?.length ?? messages.length)
-          ? branchMessages.length
-          : undefined,
-        branchPointRowId,
+        messageId ? branchMessages.length : undefined,
         ownerRoute
       )
     },
@@ -3225,8 +3210,6 @@ export function useSessionActions({
           stored?.id ?? storedSessionId,
           stored?.cwd?.trim(),
           profile,
-          undefined,
-          // Whole-parent branch: no clicked-message row to cut at.
           undefined,
           ownerRoute
         )
