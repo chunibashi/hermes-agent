@@ -1111,6 +1111,55 @@ async function createWith(
 describe('startFreshSessionDraft', () => {
   afterEach(() => cleanup())
 
+  it('keeps the fresh draft key when New Chat is started from a real session', async () => {
+    // Regression: write a draft in a brand-new chat, switch to an existing
+    // session, then come back to New Chat within moments — the draft must
+    // survive. startFreshSessionDraft() used to rotate the fresh-draft key
+    // unconditionally, so the swap back onto the fresh scope read an EMPTY
+    // new key while the pending text sat orphaned under the old one (no UI
+    // ever opens that key again).
+    let handle: HarnessHandle | null = null
+    const requestGateway = vi.fn(async () => ({}) as never)
+
+    const keyBefore = $freshDraftKey.get()
+    stashSessionDraft(keyBefore, 'typed before switching away', [])
+
+    render(
+      <Harness
+        activeSessionId="runtime-old"
+        onReady={h => (handle = h)}
+        requestGateway={requestGateway}
+        selectedStoredSessionId="old-session"
+      />
+    )
+    await waitFor(() => expect(handle).not.toBeNull())
+
+    act(() => handle!.startFreshSessionDraft())
+
+    expect($freshDraftKey.get()).toBe(keyBefore)
+    expect(takeSessionDraft(keyBefore).text).toBe('typed before switching away')
+  })
+
+  it('still rotates the key for a second New Chat started from the fresh draft itself (#66662)', async () => {
+    let handle: HarnessHandle | null = null
+    const requestGateway = vi.fn(async () => ({}) as never)
+
+    render(<Harness onReady={h => (handle = h)} requestGateway={requestGateway} />)
+    await waitFor(() => expect(handle).not.toBeNull())
+
+    const firstKey = $freshDraftKey.get()
+    stashSessionDraft(firstKey, 'first unsent chat', [])
+
+    act(() => handle!.startFreshSessionDraft())
+
+    // A truly-new second New Chat (already on the fresh draft) keeps the
+    // rotation: its composer must NOT inherit the first chat's unsent text.
+    const secondKey = $freshDraftKey.get()
+    expect(secondKey).not.toBe(firstKey)
+    expect(takeSessionDraft(secondKey).text).toBe('')
+    expect(takeSessionDraft(firstKey).text).toBe('first unsent chat')
+  })
+
   it('can reset machine-bound session state without closing the current overlay route', async () => {
     const navigate = vi.fn()
     const requestGateway = vi.fn(async () => ({}) as never)

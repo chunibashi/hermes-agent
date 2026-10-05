@@ -692,7 +692,18 @@ export function useSessionActions({
         ? normalizeNewChatWorkspaceTarget(draftOptions.workspaceTarget)
         : undefined
 
-      if (draftOptions.rotateFreshDraftKey !== false) {
+      // Rotate the fresh-draft key only when the user is ALREADY composing on
+      // a fresh draft — that is a deliberate SECOND New Chat, which must not
+      // inherit the first chat's unsent text (#66662). Entering New Chat from
+      // a real session (sidebar "New session" / ⌘N after switching away) is a
+      // RETURN to the same draft the user left: rotating there swaps in an
+      // empty key while the pending text sits orphaned under the old one, and
+      // no surface ever opens the old key again ("switch to a session, come
+      // back within moments, my draft is gone"). The swap effect
+      // (useComposerDraft) restores the draft onto the unchanged key.
+      const alreadyOnFreshDraft = !activeSessionIdRef.current && !selectedStoredSessionIdRef.current
+
+      if (draftOptions.rotateFreshDraftKey !== false && alreadyOnFreshDraft) {
         rotateFreshDraftKey()
       }
 
