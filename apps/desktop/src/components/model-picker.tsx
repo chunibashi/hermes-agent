@@ -7,6 +7,7 @@ import { type ReactElement, useMemo, useRef, useState } from 'react'
 import { useI18n } from '@/i18n'
 import { catalogProviderMatches, modelOptionsQueryKey, requestModelOptions } from '@/lib/model-options'
 import { currentPickerSelection } from '@/lib/model-status-label'
+import { accountResetMs, formatReset, modelResetMs } from '@/lib/provider-limit'
 import { foldIncludes, normalize } from '@/lib/text'
 import { cn } from '@/lib/utils'
 import { $customModels, addCustomModel, customModelCandidate, withCustomModels } from '@/store/custom-models'
@@ -25,6 +26,8 @@ import type { HermesGateway } from '../hermes'
 import { startManualOnboarding } from '../store/onboarding'
 
 import { InlineNotice } from './notifications'
+import { ProviderStatusChip } from './provider-status-chip'
+import { Badge } from './ui/badge'
 import { Button } from './ui/button'
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from './ui/command'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from './ui/dialog'
@@ -422,6 +425,7 @@ function ModelResults({
         }
 
         const unavailable = new Set(provider.unavailable_models ?? [])
+        const accountLimited = accountResetMs(provider) !== null
 
         return (
           <CommandGroup heading={<ProviderHeading provider={provider} />} key={provider.slug}>
@@ -437,6 +441,9 @@ function ModelResults({
               const price = provider.pricing?.[model]
               const locked = unavailable.has(model)
               const faved = isFavorite(favorites, provider.slug, model)
+              const resetMs = modelResetMs(provider, model)
+              const resetLabel = resetMs === null ? null : formatReset(resetMs)
+              const dimmed = !locked && (accountLimited || resetLabel !== null)
               // Managed local model loading into memory right now: show the
               // real load percent inline (keyed by exact model id — remote
               // providers never match).
@@ -468,7 +475,7 @@ function ModelResults({
                   >
                     {faved ? '★' : '☆'}
                   </button>
-                  <span className="min-w-0 flex-1 truncate">
+                  <span className={cn('min-w-0 flex-1 truncate', dimmed && !isCurrent && 'text-muted-foreground')}>
                     <HighlightMatches foldSeparators query={search} text={model} />
                   </span>
                   {loadProgress && (
@@ -484,6 +491,16 @@ function ModelResults({
                   )}
                   {locked && (
                     <span className="shrink-0 text-[0.62rem] uppercase tracking-wide opacity-80">{copy.pro}</span>
+                  )}
+                  {resetLabel && (
+                    <Badge
+                      className="font-sans tabular-nums"
+                      size="xs"
+                      title={t.shell.modelMenu.modelLimitedTip(resetLabel)}
+                      variant="warn"
+                    >
+                      {t.shell.modelMenu.modelResets(resetLabel)}
+                    </Badge>
                   )}
                   <ModelPrice isCurrent={isCurrent} price={price} />
                 </CommandItem>
@@ -695,6 +712,7 @@ function ProviderHeading({ provider }: { provider: ModelOptionProvider }) {
         {provider.slug} · {provider.total_models ?? provider.models?.length ?? 0}
       </span>
       {tierBadge}
+      <ProviderStatusChip provider={provider} />
     </span>
   )
 }
