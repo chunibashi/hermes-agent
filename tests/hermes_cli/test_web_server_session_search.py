@@ -66,6 +66,7 @@ class _FakeSessionDB:
         source_filter=None,
         exclude_sources=None,
         limit=20,
+        sort=None,
         fields=None,
     ):
         assert query == "20260603*"
@@ -219,7 +220,7 @@ class _DeepLineageSessionDB(_FakeSessionDB):
         return []  # pragma: no cover - content-hit path only in this test
 
     def search_messages(self, query, source_filter=None, exclude_sources=None,
-                        limit=20, fields=None):
+                        limit=20, sort=None, fields=None):
         return [{
             "session_id": self.MID,
             "snippet": "content hit inside a deep lineage",

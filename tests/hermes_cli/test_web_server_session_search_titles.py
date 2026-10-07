@@ -5,9 +5,11 @@ Regression for #66242: the search endpoint composed only
 message content), so a term that lived solely in a manually-set
 ``sessions.title`` returned zero results. The DB layer already had title
 matching — ``list_sessions_rich(search_query=...)`` LIKE-matches titles across
-the whole compression chain — and the endpoint never called it. The fix
-backfills remaining result slots through that existing helper via the same
-add_lineage_result dedup path (content hits keep BM25 priority).
+the whole compression chain — and the endpoint never called it. The fix added
+that lane through the same add_lineage_result dedup path.
+
+Ranking: id hits first, then title hits (the conversation's own name is the
+strongest "the user means THIS chat" signal), then content hits newest-first.
 
 These tests drive the real SessionDB through the real route handler (no fake
 DB) so the title lane is exercised end to end, including the SQLite
@@ -64,13 +66,15 @@ def test_search_finds_session_by_partial_title(db_path_for_profile):
     assert row["title"] == "Building the Modpack Server"
 
 
-def test_search_title_lane_keeps_content_hits_priority(db_path_for_profile):
-    """Content hits keep their BM25 priority; the title lane only fills
-    remaining slots and dedupes by lineage root against earlier lanes."""
+def test_search_title_lane_outranks_content_hits(db_path_for_profile):
+    """Title hits rank above content hits: a session whose NAME contains the
+    needle is what the user means, even when another session matches the same
+    term inside message text. Content hits keep newest-first order after the
+    title lane, and dedupe by lineage root against earlier lanes."""
     response = asyncio.run(_rt_sessions.search_sessions(q="modpack", limit=20))
     ids = [row["session_id"] for row in response["results"]]
     assert set(ids) == {"content_session", "titled_session"}
-    assert ids[0] == "content_session"  # FTS content hit outranks the title backfill
+    assert ids[0] == "titled_session"  # the titled session leads the content hit
     assert "other_session" not in ids
 
 

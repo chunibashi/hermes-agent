@@ -410,31 +410,15 @@ async def search_sessions(
                 snippet = preview or f"Session ID: {sid}"
                 add_lineage_result(sid, hit_payload(row, snippet, None, row.get("started_at")))
 
-            # Prefix wildcards so partial words match ("nimb" -> "nimb*");
-            # quoted phrases and existing wildcards are kept as-is.
-            prefix_query = " ".join(
-                tok if tok.startswith('"') or tok.endswith("*") else tok + "*"
-                for tok in re.findall(r'"[^"]*"|\S+', q.strip()))
-            # Over-fetch so lineage dedup can still surface `limit` distinct
-            # conversations when several hits collapse onto one root.
-            matches = db.search_messages(
-                query=prefix_query, source_filter=include_sources,
-                exclude_sources=exclude_list or None, limit=max(safe_limit * 5, 50),
-                fields=("session_id", "role", "snippet", "source", "model", "session_started"))
-            for m in matches:
-                if len(seen) >= safe_limit:
-                    break
-                add_lineage_result(
-                    m["session_id"],
-                    hit_payload(m, m.get("snippet", ""), m.get("role"), m.get("session_started")))
-
-            # Title matches fill any remaining slots (#66242): the FTS index
-            # only covers message content, so a term that lives solely in a
-            # manually-set sessions.title would otherwise return nothing. The
-            # DB layer already knows how to LIKE-match titles across the whole
+            # Title matches rank above content hits: the title is the
+            # conversation's own name, so a term living in a manually-set
+            # sessions.title is the strongest "the user means THIS chat"
+            # signal — stronger than a mention buried inside message text
+            # (which BM25 happily buries under short tool-row path hits).
+            # The DB layer already LIKE-matches titles across the whole
             # compression chain (list_sessions_rich(search_query=) — the same
-            # helper the sidebar listing uses), so reuse it rather than adding
-            # a second title query path here. Best-effort: an old/odd store
+            # helper the sidebar listing uses), ordered by last activity, so
+            # the lane is time-descending. Best-effort: an old/odd store
             # that rejects the call just skips the lane.
             if len(seen) < safe_limit:
                 try:
@@ -455,6 +439,31 @@ async def search_sessions(
                     add_lineage_result(
                         sid, hit_payload(row, preview or f"Session title matched: {q.strip()}",
                                          None, row.get("started_at")))
+
+            # Content hits after the title lane, newest first: matching text
+            # is a relevance signal but not a ranking one — sorting by BM25
+            # rank lets one-line tool rows full of file paths (e.g. a wiki
+            # path containing the needle) outrank whole conversations about
+            # the topic. Recency keeps the list scannable ("the chat I had
+            # about this most recently" is what people actually reach for),
+            # with rank as the tiebreaker.
+            prefix_query = " ".join(
+                tok if tok.startswith('"') or tok.endswith("*") else tok + "*"
+                for tok in re.findall(r'"[^"]*"|\S+', q.strip()))
+            # Over-fetch so lineage dedup can still surface `limit` distinct
+            # conversations when several hits collapse onto one root.
+            matches = db.search_messages(
+                query=prefix_query, source_filter=include_sources,
+                exclude_sources=exclude_list or None, limit=max(safe_limit * 5, 50),
+                sort="newest",
+                fields=("session_id", "role", "snippet", "source", "model", "session_started"))
+            for m in matches:
+                if len(seen) >= safe_limit:
+                    break
+                add_lineage_result(
+                    m["session_id"],
+                    hit_payload(m, m.get("snippet", ""), m.get("role"), m.get("session_started")))
+
             return {"results": list(seen.values())}
 
         # FTS over a large state.db is the slowest read here; keep it off the loop (#60747).
