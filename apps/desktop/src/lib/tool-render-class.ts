@@ -41,6 +41,8 @@ const CARD_TOOL_NAMES = [
   'manage_connections',
   'setup_mcp',
   'skill_manage'
+  'setup_choose',
+  'start_chat'
 ] as const
 
 export type CardToolName = (typeof CARD_TOOL_NAMES)[number]
