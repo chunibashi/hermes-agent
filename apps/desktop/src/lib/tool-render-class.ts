@@ -40,7 +40,7 @@ const CARD_TOOL_NAMES = [
   'manage_catalog',
   'manage_connections',
   'setup_mcp',
-  'skill_manage'
+  'skill_manage',
   'setup_choose',
   'start_chat'
 ] as const

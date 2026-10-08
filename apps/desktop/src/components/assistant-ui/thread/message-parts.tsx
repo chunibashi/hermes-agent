@@ -121,7 +121,7 @@ const TOOL_CARDS: Record<CardToolName, FC<TimelineToolCallProps>> = {
   // connections card; skill_manage is a diff-bearing card drawn by
   // ToolFallback (inline_diff title stats).
   setup_mcp: ConnectionsToolPart,
-  skill_manage: ToolFallback
+  skill_manage: ToolFallback,
   setup_choose: ClarifyToolPart,
   start_chat: StartChatToolPart
 }
