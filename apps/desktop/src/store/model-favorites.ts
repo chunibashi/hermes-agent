@@ -35,11 +35,7 @@ export function setFavoriteModels(keys: Set<string>): void {
 
 /** Toggle a single model's favorite state. Returns the new set. Seeds from
  *  the stored favorites (null = empty set). */
-export function toggleFavorite(
-  stored: Set<string> | null,
-  providerSlug: string,
-  model: string
-): Set<string> {
+export function toggleFavorite(stored: Set<string> | null, providerSlug: string, model: string): Set<string> {
   const next = new Set(stored ?? [])
   const key = favoriteKey(providerSlug, model)
 
@@ -53,11 +49,7 @@ export function toggleFavorite(
 }
 
 /** Check if a model is favorited. Handles null (no favorites yet). */
-export function isFavorite(
-  stored: Set<string> | null,
-  providerSlug: string,
-  model: string
-): boolean {
+export function isFavorite(stored: Set<string> | null, providerSlug: string, model: string): boolean {
   if (!stored) {
     return false
   }

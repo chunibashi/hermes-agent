@@ -256,7 +256,15 @@ test('no-console env strips simple-git argv-parser injection-surface keys', () =
     'C:\\Program Files\\Git\\cmd\\git.exe'
   )
 
-  for (const stripped of ['EDITOR', 'VISUAL', 'PAGER', 'GIT_PAGER', 'GIT_ASKPASS', 'GIT_SSH_COMMAND', 'GIT_CONFIG_COUNT']) {
+  for (const stripped of [
+    'EDITOR',
+    'VISUAL',
+    'PAGER',
+    'GIT_PAGER',
+    'GIT_ASKPASS',
+    'GIT_SSH_COMMAND',
+    'GIT_CONFIG_COUNT'
+  ]) {
     assert.equal(env[stripped], undefined, `${stripped} should be stripped`)
   }
 

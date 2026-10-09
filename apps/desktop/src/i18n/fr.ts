@@ -5647,9 +5647,9 @@ export const frOverrides = {
     resumeFailed: 'Échec de la reprise',
     readOnlyTranscriptTitle: 'Ouverte en lecture seule',
     readOnlyTranscriptBody:
-    "Aucun backend connecté ne revendique encore cette ancienne conversation ; elle est donc ouverte comme transcription en lecture seule. Son historique est intact, mais l'envoi reste désactivé jusqu'à ce qu'un backend la prenne en charge.",
+      "Aucun backend connecté ne revendique encore cette ancienne conversation ; elle est donc ouverte comme transcription en lecture seule. Son historique est intact, mais l'envoi reste désactivé jusqu'à ce qu'un backend la prenne en charge.",
     readOnlyTranscriptSendBlocked:
-    "Cette conversation est ouverte comme transcription en lecture seule — l'envoi est désactivé.",
+      "Cette conversation est ouverte comme transcription en lecture seule — l'envoi est désactivé.",
 
     resumeStrandedTitle: 'Impossible de charger cette session',
     resumeStrandedBody:

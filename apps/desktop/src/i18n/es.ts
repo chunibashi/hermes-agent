@@ -5633,7 +5633,7 @@ export const esOverrides = {
     readOnlyTranscriptBody:
       'Ningún backend conectado reclama todavía este chat antiguo, así que se abrió como transcripción de solo lectura. Su historial está intacto; el envío está desactivado hasta que un backend lo reclame.',
     readOnlyTranscriptSendBlocked:
-    'Este chat está abierto como transcripción de solo lectura: el envío está desactivado.',
+      'Este chat está abierto como transcripción de solo lectura: el envío está desactivado.',
 
     resumeStrandedTitle: 'No se pudo cargar esta sesión',
     resumeStrandedBody:

@@ -5640,7 +5640,7 @@ export const deOverrides = {
     readOnlyTranscriptBody:
       'Noch kein verbundenes Backend beansprucht diesen älteren Chat, also wurde er als schreibgeschütztes Transkript geöffnet. Seine Historie ist intakt; Senden ist deaktiviert, bis ein Backend ihn beansprucht.',
     readOnlyTranscriptSendBlocked:
-    'Dieser Chat ist als schreibgeschütztes Transkript geöffnet — Senden ist deaktiviert.',
+      'Dieser Chat ist als schreibgeschütztes Transkript geöffnet — Senden ist deaktiviert.',
 
     resumeStrandedTitle: 'Diese Session konnte nicht geladen werden',
     resumeStrandedBody:

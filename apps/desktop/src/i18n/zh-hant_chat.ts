@@ -439,7 +439,7 @@ export const zhHantChat = {
     resumeFailed: '繼續失敗',
     readOnlyTranscriptTitle: '已以唯讀方式開啟',
     readOnlyTranscriptBody:
-    '尚無已連線的後端認領這個較早的對話，因此它以唯讀逐字稿方式開啟。歷史紀錄完好；在有後端認領之前無法傳送訊息。',
+      '尚無已連線的後端認領這個較早的對話，因此它以唯讀逐字稿方式開啟。歷史紀錄完好；在有後端認領之前無法傳送訊息。',
     readOnlyTranscriptSendBlocked: '此對話目前以唯讀逐字稿方式開啟——傳送已停用。',
 
     resumeStrandedTitle: '無法載入此工作階段',
