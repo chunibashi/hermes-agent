@@ -210,7 +210,13 @@ export function useSlashCommand(deps: SlashCommandDeps) {
   return useCallback(
     async (
       rawCommand: string,
-      options?: { hidden?: boolean; sessionId?: string; recordInput?: boolean; typed?: boolean; attachments?: ComposerAttachment[] }
+      options?: {
+        hidden?: boolean
+        sessionId?: string
+        recordInput?: boolean
+        typed?: boolean
+        attachments?: ComposerAttachment[]
+      }
     ) => {
       // Resolve the session this command targets through the SHARED ladder that
       // submit.ts uses. A slash command runs backend commands against a runtime

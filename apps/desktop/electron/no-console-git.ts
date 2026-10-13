@@ -183,11 +183,7 @@ const UNSAFE_GIT_ENV_KEYS = new Set([
 // argv-parser pairs `git_config_count` with numbered `git_config_key_N` /
 // `git_config_value_N` entries; those ride along as a set.
 function isUnsafeGitEnvKey(key: string): boolean {
-  return (
-    UNSAFE_GIT_ENV_KEYS.has(key) ||
-    key.startsWith('git_config_key_') ||
-    key.startsWith('git_config_value_')
-  )
+  return UNSAFE_GIT_ENV_KEYS.has(key) || key.startsWith('git_config_key_') || key.startsWith('git_config_value_')
 }
 
 export function noConsoleGitEnv(base: NodeJS.ProcessEnv | undefined, gitBin: string): NodeJS.ProcessEnv {

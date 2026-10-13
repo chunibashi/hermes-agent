@@ -4125,7 +4125,6 @@ export const en: Translations = {
     customModel: 'Custom model',
     addCustomModelAction: 'Add custom model…',
     customModelPlaceholder: 'Type a model id, e.g. openai/gpt-5'
-
   },
 
   modelVisibility: {

@@ -74,6 +74,7 @@ describe('mid-turn reconcile: stored [r1, tool] vs live [r1, tool, r2]', () => {
         { type: 'text', text: '嗯……你好呀～', timestamp: 1007 } as ChatMessagePart
       ]
     }
+
     const liveFull: ChatMessage = {
       ...liveBubble,
       parts: [...liveBubble.parts, { type: 'text', text: '嗯……你好呀～', timestamp: 1007 } as ChatMessagePart]

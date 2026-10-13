@@ -748,6 +748,7 @@ export const focusComposerInput = (el: HTMLElement | null) => {
   // protected. Check before every focus() attempt, not just once.
   const selectionHeld = () => {
     const selection = window.getSelection()
+
     return Boolean(selection && selection.rangeCount > 0 && !selection.isCollapsed)
   }
 

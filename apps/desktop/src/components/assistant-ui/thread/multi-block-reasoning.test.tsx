@@ -191,30 +191,36 @@ describe('single-channel multi-block turn labels (production pipeline)', () => {
         initial={
           // Completed turn, loaded from history: no measurement was ever
           // taken (different process / registry cleared).
-          [{
-            id: 'user-1',
-            role: 'user',
-            parts: [text('完成 wiki 任务')]
-          }, {
-            id: 'stored-1001-1',
-            role: 'assistant',
-            pending: false,
-            completedAt: 2000,
-            parts: [
-              { ...reasoningPart('history-only first block never measured in this process', 1000, 'delta'), completedAt: 1500 },
-              text('让我先加载技能'),
-              {
-                type: 'tool-call',
-                toolCallId: 'tool-1',
-                toolName: 'search_files',
-                args: {},
-                argsText: '{}',
-                result: { ok: true }
-              },
-              think2(),
-              text('最终回复')
-            ]
-          }]
+          [
+            {
+              id: 'user-1',
+              role: 'user',
+              parts: [text('完成 wiki 任务')]
+            },
+            {
+              id: 'stored-1001-1',
+              role: 'assistant',
+              pending: false,
+              completedAt: 2000,
+              parts: [
+                {
+                  ...reasoningPart('history-only first block never measured in this process', 1000, 'delta'),
+                  completedAt: 1500
+                },
+                text('让我先加载技能'),
+                {
+                  type: 'tool-call',
+                  toolCallId: 'tool-1',
+                  toolName: 'search_files',
+                  args: {},
+                  argsText: '{}',
+                  result: { ok: true }
+                },
+                think2(),
+                text('最终回复')
+              ]
+            }
+          ]
         }
         onControls={() => undefined}
       />
