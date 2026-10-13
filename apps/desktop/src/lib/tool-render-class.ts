@@ -30,6 +30,8 @@ export function isFileEditTool(toolName: string): boolean {
 //     change as an inline diff (agent/display.py treats it like a file edit),
 //     so the edit is a deliverable the user reviews, not scaffolding.
 //   - `manage_catalog` is a consent card; its controls must stay visible.
+//   - `set_theme` shows a picker card while it waits for the user, then a one-line receipt.
+//   - `setup_beat` is the onboarding chat's card for one beat, then a one-line receipt.
 //
 // Everything else is ephemeral activity — reads, searches, commands — which is
 // what a run summarizes and what the live ticker cycles through.
@@ -41,8 +43,8 @@ const CARD_TOOL_NAMES = [
   'manage_connections',
   'setup_mcp',
   'skill_manage',
-  'setup_choose',
-  'start_chat'
+  'set_theme',
+  'setup_beat'
 ] as const
 
 export type CardToolName = (typeof CARD_TOOL_NAMES)[number]

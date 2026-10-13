@@ -284,13 +284,6 @@ class CLISessionMixin:
             ctx_label = None
 
         lines = [t("cli.session.status_title"), "", *status_lines(fields, "session_id", "path", "title", "model")]
-        try:
-            from hermes_cli.anon_auth import free_tier_route
-
-            if free_tier_route():
-                lines.append(t("gateway.status.free_tier"))
-        except Exception:
-            pass
         optional = ((t("cli.session.label_reasoning"), reasoning_label),
                     (t("cli.session.label_approvals"), approval_label),
                     (t("cli.session.label_context"), ctx_label))
@@ -1181,7 +1174,7 @@ class CLISessionMixin:
                     snapshot = json.load(f)
                 old_messages = snapshot.get("conversation_history", [])
                 if not old_messages:
-                    print(f"  (._.) Empty."); return
+                    print("  (._.) Empty."); return
                 # 1. In-place prepend (preserves reference identity)
                 prefix = [{"role": "system", "content": f"[Handoff from session {target_id}]"}]
                 self.conversation_history[:] = prefix + old_messages + self.conversation_history
