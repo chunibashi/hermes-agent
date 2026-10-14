@@ -2655,7 +2655,7 @@ export function useSessionActions({
       parentStoredId: null | string,
       cwd?: string,
       profile?: null | string,
-      branchCount?: number,
+      branchPointRowId?: number,
       ownerRoute?: SessionOwnerRoute,
       idempotencyKey?: string
     ): Promise<boolean> => {
@@ -2700,7 +2700,7 @@ export function useSessionActions({
         // connections is two different sessions, so a route-blind key would
         // coalesce them onto one create.
         const createKey = branchCreateKey({
-          branchCount,
+          branchPointRowId,
           branchMessages,
           cwd,
           ownerRoute,
@@ -2718,7 +2718,7 @@ export function useSessionActions({
             // Stable per-attempt key: a lost-response retry of session.branch /
             // session.branch_whole returns the SAME child (#65410).
             idempotency_key: key,
-            ...(branchCount !== undefined ? { count: branchCount } : {})
+            ...(branchPointRowId !== undefined ? { row_id: branchPointRowId } : {})
           }
 
           const createParams = {
@@ -2735,7 +2735,7 @@ export function useSessionActions({
           createFlight = (
             sourceSessionId
               ? requestBranchGateway<SessionCreateResponse>(
-                  branchCount === undefined ? 'session.branch_whole' : 'session.branch',
+                  branchPointRowId !== undefined ? 'session.branch' : 'session.branch_whole',
                   branchParams
                 ).catch(err => {
                   if (!isMissingRpcMethod(err)) {
@@ -2853,8 +2853,16 @@ export function useSessionActions({
         // unconditionally). resumeSession reuses the runtime warm-cached above
         // (ensureSessionState/updateSessionState) instead of an extra resume RPC.
         if (parentStoredId !== null && selectedStoredSessionIdRef.current === parentStoredId) {
-          navigate(sessionRoute(routedSessionId), { replace: true })
+          // Resume BEFORE navigating the address bar: resumeSession captures
+          // getRouteToken() at entry and bails via isCurrentResume() when the
+          // route changes mid-await. navigate() schedules a location update
+          // that React only commits after the current task yields, so calling
+          // it first makes the resume see a stale routeToken and return early
+          // — the branch's warm-cached rows never stage to the view and the
+          // pane keeps showing the parent's full transcript under the new
+          // branch route.
           await resumeSession(routedSessionId)
+          navigate(sessionRoute(routedSessionId), { replace: true })
         } else {
           // Carry the exact owner onto the tile: its persisted ownerRoute is
           // what pins the owning backend's socket in the gateway keep-set
@@ -2894,7 +2902,7 @@ export function useSessionActions({
                 parentStoredId,
                 cwd,
                 profile,
-                branchCount,
+                branchPointRowId,
                 ownerRoute,
                 key
               )
@@ -2993,13 +3001,25 @@ export function useSessionActions({
 
       clearNotifications()
 
+      // Resolve the cut row from the CLICKED message itself (authoritative
+      // first, live atom fallback), not from a merged-bubble count: the
+      // frontend folds a tool-heavy turn into one assistant bubble, so a
+      // bubble count has no stable mapping onto the backend's raw row
+      // history and silently slices off the conversation tail.
+      const clickedMessage = messageId
+        ? (authoritativeMessages ?? []).find(m => m.id === messageId) ??
+          messages.find(m => m.id === messageId)
+        : undefined
+
+      const branchPointRowId = clickedMessage?.rowId
+
       return forkBranch(
         branchMessages,
         runtimeId,
         storedSessionId,
         cwd?.trim(),
         profile,
-        messageId ? branchMessages.length : undefined,
+        branchPointRowId,
         ownerRoute
       )
     },

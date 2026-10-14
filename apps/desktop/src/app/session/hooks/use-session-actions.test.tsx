@@ -3510,7 +3510,7 @@ describe('branchStoredSession desktop source tagging', () => {
     expect(requestGatewayForAgent).not.toHaveBeenCalled()
   })
 
-  it('branches an open live chat via session.branch with a trimmed message count (bug #1/#3 fix)', async () => {
+  it('branches an open live chat via session.branch with a durable row id (bug #1/#3 fix)', async () => {
     let branchParams: Record<string, unknown> | undefined
 
     const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
@@ -3531,10 +3531,10 @@ describe('branchStoredSession desktop source tagging', () => {
     })
 
     setMessages([
-      { id: 'q1', role: 'user', parts: [{ type: 'text', text: 'question one' }] },
-      { id: 'a1', role: 'assistant', parts: [{ type: 'text', text: 'answer one' }] },
-      { id: 'q2', role: 'user', parts: [{ type: 'text', text: 'question two' }] },
-      { id: 'a2', role: 'assistant', parts: [{ type: 'text', text: 'answer two' }] }
+      { id: 'q1', role: 'user', parts: [{ type: 'text', text: 'question one' }], rowId: 101 },
+      { id: 'a1', role: 'assistant', parts: [{ type: 'text', text: 'answer one' }], rowId: 102 },
+      { id: 'q2', role: 'user', parts: [{ type: 'text', text: 'question two' }], rowId: 103 },
+      { id: 'a2', role: 'assistant', parts: [{ type: 'text', text: 'answer two' }], rowId: 104 }
     ])
 
     let branchCurrentSession: ((messageId?: string) => Promise<boolean>) | null = null
@@ -3548,21 +3548,20 @@ describe('branchStoredSession desktop source tagging', () => {
     )
     await waitFor(() => expect(branchCurrentSession).not.toBeNull())
 
-    // Branch from the FIRST assistant reply ("a1"), not the last message �
+    // Branch from the FIRST assistant reply ("a1"), not the last message —
     // this is exactly the scenario that used to drop the question (bug #1):
     // only the clicked message survived instead of everything up to it.
     await expect(branchCurrentSession!('a1')).resolves.toBe(true)
 
     expect(requestGateway).toHaveBeenCalledWith('session.branch', {
       session_id: 'live-parent',
+      row_id: 102,
       // Stable per-attempt key (#65410): present but opaque to this test.
       idempotency_key: expect.any(String)
     })
     // No count sent: the backend truncates its OWN display projection via
-    // row_id. When row_id is unavailable (no durable row id on the live
-    // message), no count means the backend returns the full transcript —
-    // safer than amputating with a wrong count.
-    expect(branchParams).toEqual({ session_id: 'live-parent', idempotency_key: expect.any(String) })
+    // row_id. The clicked message's durable row id drives the cut.
+    expect(branchParams).toEqual({ session_id: 'live-parent', row_id: 102, idempotency_key: expect.any(String) })
   })
 
   it('resumes the branch (flipping selection to it) BEFORE navigating, so the route flips with the view already staged', async () => {
@@ -3583,6 +3582,7 @@ describe('branchStoredSession desktop source tagging', () => {
       if (method === 'session.branch') {
         expect(params).toEqual({
           session_id: 'live-parent',
+          row_id: 102,
           idempotency_key: expect.any(String)
         })
 
@@ -3592,8 +3592,8 @@ describe('branchStoredSession desktop source tagging', () => {
           title: 'Branch',
           message_count: 2,
           messages: [
-            { role: 'user', text: 'question one', row_id: 10 },
-            { role: 'assistant', text: 'answer one', row_id: 11 }
+            { role: 'user', text: 'question one', row_id: 101 },
+            { role: 'assistant', text: 'answer one', row_id: 102 }
           ],
           info: {}
         } as never
@@ -3603,8 +3603,8 @@ describe('branchStoredSession desktop source tagging', () => {
     })
 
     setMessages([
-      { id: 'q1', role: 'user', parts: [{ type: 'text', text: 'question one' }] },
-      { id: 'a1', role: 'assistant', parts: [{ type: 'text', text: 'answer one' }] }
+      { id: 'q1', role: 'user', parts: [{ type: 'text', text: 'question one' }], rowId: 101 },
+      { id: 'a1', role: 'assistant', parts: [{ type: 'text', text: 'answer one' }], rowId: 102 }
     ])
 
     let branchCurrentSession: ((messageId?: string) => Promise<boolean>) | null = null
@@ -3727,10 +3727,10 @@ describe('branchStoredSession desktop source tagging', () => {
     })
 
     const messages = [
-      { id: 'q1', role: 'user' as const, parts: [{ type: 'text' as const, text: 'question one' }] },
-      { id: 'a1', role: 'assistant' as const, parts: [{ type: 'text' as const, text: 'answer one' }] },
-      { id: 'q2', role: 'user' as const, parts: [{ type: 'text' as const, text: 'question two' }] },
-      { id: 'a2', role: 'assistant' as const, parts: [{ type: 'text' as const, text: 'answer two' }] }
+      { id: 'q1', role: 'user' as const, parts: [{ type: 'text' as const, text: 'question one' }], rowId: 101 },
+      { id: 'a1', role: 'assistant' as const, parts: [{ type: 'text' as const, text: 'answer one' }], rowId: 102 },
+      { id: 'q2', role: 'user' as const, parts: [{ type: 'text' as const, text: 'question two' }], rowId: 103 },
+      { id: 'a2', role: 'assistant' as const, parts: [{ type: 'text' as const, text: 'answer two' }], rowId: 104 }
     ]
 
     setSessions([storedSession({ id: 'tile-stored', message_count: messages.length })])
@@ -3757,7 +3757,7 @@ describe('branchStoredSession desktop source tagging', () => {
 
     expect(requestGateway).toHaveBeenCalledWith('session.branch', {
       session_id: 'tile-runtime',
-      count: 2,
+      row_id: 102,
       idempotency_key: expect.any(String)
     })
   })
