@@ -1078,8 +1078,8 @@ class TestRunJobConfigEnvVarExpansion:
         raised httpx.ConnectError ([Errno 8] nodename nor servname provided)
         and the scheduler only tried fallbacks on AuthError, so the job died
         before XAI_API_KEY / Anthropic could rescue it. The job follows the
-        main model (unpinned): a pinned job never walks the global chain
-        (#100437, tests/cron/test_cron_pinned_job_fallback.py).
+        main model (unpinned): a pinned job now also walks the global chain
+        (tests/cron/test_cron_pinned_job_fallback.py).
         """
         import httpx
 
@@ -1136,7 +1136,7 @@ class TestRunJobConfigEnvVarExpansion:
 
     def test_auth_fallback_switches_provider_and_model_together(self, tmp_path):
         """Codex auth failure must produce OpenRouter+GLM, never OpenRouter+GPT (unpinned job:
-        a pinned one does not walk the global chain, #100437)."""
+        a pinned one now also walks the global chain)."""
         from hermes_cli.auth import AuthError
 
         (tmp_path / "config.yaml").write_text(

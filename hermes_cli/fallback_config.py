@@ -154,6 +154,9 @@ def scoped_fallback_chain(
     when *declared* is absent/None. An explicit ``[]`` disables fallback either way; any other
     *declared* value is the owner's own chain, normalized by :func:`get_fallback_chain` (malformed
     entries are dropped; nothing usable left falls back to the pinned/inherited default).
+
+    Cron jobs pass ``pinned=False`` so a pinned job inherits the global chain as backstop; the
+    pin selects the primary route, fallback is the recovery path when that route fails.
     """
     default = None if pinned else (inherited or None)
     if declared is None:

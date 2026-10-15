@@ -97,26 +97,21 @@ def _job_route_pinned(job: dict) -> bool:
 def _job_fallback_chain(job: dict, cfg: Any) -> Optional[list]:
     """The fallback chain this job may walk, at credential resolution AND mid-run (#100437).
 
-    A pinned job never borrows the global ``fallback_providers`` chain, the same rule a pinned
-    ``delegate_task`` child follows (``scoped_fallback_chain``): a chain entry is a different
-    provider and usually a different model, which is exactly what the pin ruled out. Same-provider
-    credential-pool rotation is not the chain and still applies. Unpinned jobs inherit the chain.
+    A pinned job inherits the global ``fallback_providers`` chain: the pin selects the primary
+    route, fallback is the backstop when that route fails (auth error, 5xx, 429). A job may
+    declare its own ``fallback_providers`` to override, or ``[]`` to disable. Same-provider
+    credential-pool rotation is not the chain and still applies.
     """
+    declared = job.get("fallback_providers")
     return scoped_fallback_chain(
-        get_fallback_chain(cfg), None, pinned=_job_route_pinned(job), owner="cron job")
+        get_fallback_chain(cfg), declared, pinned=False, owner="cron job")
 
 
 def _fallback_chain_phrase(job: Optional[dict] = None) -> str:
-    """Backup-provider clause for a provider-failure notice: "pinned, no fallback" vs "the backups
-    failed too" vs "none configured" (most installs). Fails open to "the backups failed too" if
-    config can't be read — never crash delivery.
+    """Backup-provider clause for a provider-failure notice: "the backups failed too" vs
+    "none configured" (most installs). Fails open to "the backups failed too" if config can't
+    be read — never crash delivery.
     """
-    if job is not None and _job_route_pinned(job):
-        return (
-            "This job is pinned to its own provider/model, so it does not fall back to "
-            f"`fallback_providers`; `hermes cron edit {job.get('id')} --unpin` lets it follow the "
-            "main model and its fallback chain."
-        )
     try:
         cfg = load_config() or {}
         chain = get_fallback_chain(cfg)
@@ -2475,8 +2470,7 @@ def _resolve_cron_agent_setup(job: dict, job_id: str, job_name: str, jc) -> _Cro
     setup.reasoning_config = _resolve_job_reasoning_config(
         job, _cfg if isinstance(_cfg, dict) else {}, str(setup.model)
     )
-    # Mid-run provider ladder: same rule as resolution above, so a pinned job cannot be swapped
-    # onto the global chain by a 5xx/429 either.
+    # Mid-run provider ladder: a pinned job inherits the global chain as backstop.
     setup.fallback_model = _job_fallback_chain(job, _cfg)
     setup.credential_pool = _load_credential_pool(setup.runtime, job_id)
     # MCP servers must be registered before AIAgent is constructed.
