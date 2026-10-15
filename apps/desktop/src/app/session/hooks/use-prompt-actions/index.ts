@@ -684,6 +684,15 @@ export function usePromptActions({
 
         // Forward the explicit target (background queue drain, tile) — dropping
         // it ran the command against whatever chat happened to be in front.
+        // Attachments ride the command: runSlash's resolved skill/send payload
+        // submits with the composer's attachments (or the explicit ones carried
+        // in from a queue drain / tile submit).
+        await executeSlashCommand(visibleText, {
+          ...(options?.sessionId ? { sessionId: options.sessionId } : {}),
+          ...(options?.attachments?.length ? { attachments: options.attachments } : {})
+        })
+
+        return true
       }
 
       return await submitPromptText(rawText, options)

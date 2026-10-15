@@ -25,7 +25,7 @@ import { applyReasoningSlashResult, reasoningSlashParams } from '@/lib/reasoning
 import { setSessionYolo } from '@/lib/yolo-session'
 import { openCommandPalettePage } from '@/store/command-palette'
 import { markCompressDeferred } from '@/store/compaction'
-import { $composerAttachments, setComposerDraft } from '@/store/composer'
+import { $composerAttachments, type ComposerAttachment, setComposerDraft } from '@/store/composer'
 import { applyGoalStatusText } from '@/store/goals'
 import { dismissNotification, notify, notifyError } from '@/store/notifications'
 import { setPetScale } from '@/store/pet-gallery'
@@ -213,7 +213,14 @@ export function useSlashCommand(deps: SlashCommandDeps) {
   const compressInFlightRef = useRef(new Set<string>())
 
   return useCallback(
-    async (rawCommand: string, options?: SubmitTextOptions & { recordInput?: boolean; typed?: boolean }) => {
+    async (
+      rawCommand: string,
+      options?: SubmitTextOptions & {
+        recordInput?: boolean
+        typed?: boolean
+        attachments?: ComposerAttachment[]
+      }
+    ) => {
       const initialRuntimeId = options?.sessionId ?? activeSessionIdRef.current
       const initialSelectedId = selectedStoredSessionIdRef.current
       const initialRoutedId = getRoutedStoredSessionId()
@@ -512,7 +519,8 @@ export function useSlashCommand(deps: SlashCommandDeps) {
             storedSessionId,
             displayText,
             submission_id: submissionId,
-            destination
+            destination,
+            ...(ctx.attachments?.length ? { attachments: ctx.attachments } : {})
           })
         }
 
@@ -1535,7 +1543,7 @@ export function useSlashCommand(deps: SlashCommandDeps) {
         }
       }
 
-      await runSlash(rawCommand, options?.sessionId ?? undefined, options?.recordInput ?? true)
+      await runSlash(rawCommand, options?.sessionId ?? undefined, options?.recordInput ?? true, options?.attachments)
 
       return submitted
     },

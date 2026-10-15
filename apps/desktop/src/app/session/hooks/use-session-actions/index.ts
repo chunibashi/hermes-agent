@@ -2628,7 +2628,7 @@ export function useSessionActions({
       parentStoredId: null | string,
       cwd?: string,
       profile?: null | string,
-      branchPointRowId?: number,
+      branchCount?: number,
       ownerRoute?: SessionOwnerRoute,
       idempotencyKey?: string
     ): Promise<boolean> => {
@@ -2673,7 +2673,7 @@ export function useSessionActions({
         // connections is two different sessions, so a route-blind key would
         // coalesce them onto one create.
         const createKey = branchCreateKey({
-          branchPointRowId,
+          branchCount,
           branchMessages,
           cwd,
           ownerRoute,
@@ -2710,7 +2710,7 @@ export function useSessionActions({
           createFlight = (
             sourceSessionId
               ? requestBranchGateway<SessionCreateResponse>(
-                  branchPointRowId !== undefined ? 'session.branch' : 'session.branch_whole',
+                  branchCount === undefined ? 'session.branch_whole' : 'session.branch',
                   branchParams
                 ).catch(err => {
                   if (!isMissingRpcMethod(err)) {
@@ -2877,7 +2877,7 @@ export function useSessionActions({
                 parentStoredId,
                 cwd,
                 profile,
-                branchPointRowId,
+                branchCount,
                 ownerRoute,
                 key
               )
@@ -2976,25 +2976,13 @@ export function useSessionActions({
 
       clearNotifications()
 
-      // Resolve the cut row from the CLICKED message itself (authoritative
-      // first, live atom fallback), not from a merged-bubble count: the
-      // frontend folds a tool-heavy turn into one assistant bubble, so a
-      // bubble count has no stable mapping onto the backend's raw row
-      // history and silently slices off the conversation tail.
-      const clickedMessage = messageId
-        ? (authoritativeMessages ?? []).find(m => m.id === messageId) ??
-          messages.find(m => m.id === messageId)
-        : undefined
-
-      const branchPointRowId = clickedMessage?.rowId
-
       return forkBranch(
         branchMessages,
         runtimeId,
         storedSessionId,
         cwd?.trim(),
         profile,
-        branchPointRowId,
+        messageId ? branchMessages.length : undefined,
         ownerRoute
       )
     },

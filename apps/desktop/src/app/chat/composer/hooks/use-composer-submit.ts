@@ -254,19 +254,6 @@ export function useComposerSubmit({
     // /send directives).  Queuing them would make every slash command wait
     // for the current turn to finish, which is how the TUI never behaves.
     if (isSlashCommandText(text)) {
-      if (attachments.length) {
-        // Slash commands cannot ride alongside attachments — warn the user
-        // instead of silently queuing the payload (which would then reach the
-        // idle path and be submitted as plain text with no command execution).
-        notify({
-          kind: 'warning',
-          title: copy.slashCommandIgnoredTitle,
-          message: copy.slashCommandIgnoredBody
-        })
-
-        return false
-      }
-
       const retry = takeDraftRetry?.(text, [])
       triggerHaptic('submit')
       clearDraft()

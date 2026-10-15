@@ -3,7 +3,7 @@ import type { SessionOwnerRoute } from '@/store/session-request-router'
 import type { BranchMessage } from './utils'
 
 interface BranchCreateKeyInput {
-  branchPointRowId?: number
+  branchCount?: number
   branchMessages: BranchMessage[]
   cwd?: string
   ownerRoute?: SessionOwnerRoute
@@ -20,7 +20,7 @@ const branchMessagesFingerprint = (messages: BranchMessage[]): string =>
 // flight instead of minting a second child. The OWNER is part of the identity:
 // the same parent id served by two connections is two different sessions.
 export function branchCreateKey({
-  branchPointRowId,
+  branchCount,
   branchMessages,
   cwd,
   ownerRoute,
@@ -29,7 +29,7 @@ export function branchCreateKey({
   sourceSessionId
 }: BranchCreateKeyInput): string {
   return JSON.stringify({
-    branchPointRowId: branchPointRowId ?? null,
+    branchCount: branchCount ?? null,
     connectionId: ownerRoute?.connectionId || null,
     cwd: cwd?.trim() || null,
     messages: sourceSessionId ? null : branchMessagesFingerprint(branchMessages),
