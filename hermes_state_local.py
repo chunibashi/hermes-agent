@@ -74,9 +74,23 @@ def commit_local_session(db, *, epoch, receipt):
         if ('legacy_session_id' not in receipt and
                 conn.execute('SELECT 1 FROM sessions WHERE id=?', (sid,)).fetchone()):
             raise RuntimeStoreError('storage_unavailable')
-        if conn.execute("SELECT 1 FROM gateway_routing WHERE scope=? AND session_key=?",
-                        (scope, route)).fetchone():
-            raise RuntimeStoreError('admission_conflict')
+        existing = conn.execute("SELECT entry_json FROM gateway_routing WHERE scope=? AND session_key=?",
+                                (scope, route)).fetchone()
+        if existing is not None:
+            try:
+                routed = json.loads(existing[0]).get('session_id')
+            except (ValueError, TypeError):
+                routed = None
+            if routed != sid:
+                # The route is held by a DIFFERENT session. That is only a conflict while the
+                # holder is still live: a predecessor the reset policy already ended (daily/idle
+                # rotation) is exactly the session this create is replacing. Refusing it strands
+                # the route on a dead row, the conversation then reads as a brand-new empty chat,
+                # and this receipt is never written — so restoring that session answers not_found.
+                holder_live = conn.execute(
+                    'SELECT 1 FROM sessions WHERE id=? AND ended_at IS NULL', (routed,)).fetchone()
+                if holder_live:
+                    raise RuntimeStoreError('admission_conflict')
         if 'legacy_session_id' in receipt:
             from hermes_state_local_migration import bind_legacy_target
             bind_legacy_target(db, conn, receipt)
