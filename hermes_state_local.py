@@ -9,7 +9,7 @@ API_BINDING_PREFIX = 'gateway.api.binding.v1.'
 API_DECLARED_PREFIX = 'gateway.api.conversation.v1.'
 
 
-def _routing_scope_for(db) -> str:
+def routing_scope_for(db) -> str:
     """The namespace this store's routing index actually lives in.
 
     ``SessionStore`` persists and loads ``gateway_routing`` rows under ``_routing_scope()`` (the
@@ -32,13 +32,26 @@ def _routing_scope_for(db) -> str:
         return ""
 
 
+def routing_scope_for_conn(conn) -> str:
+    """Same namespace, resolved from a bare connection (no ``db`` handle in scope): the scope the
+    live index already uses. Empty when nothing has been written yet, which is also when the
+    legacy namespace is empty and the check cannot misfire."""
+    try:
+        row = conn.execute("SELECT scope FROM gateway_routing WHERE scope != '' LIMIT 1").fetchone()
+        if row is not None:
+            return row[0]
+    except Exception:
+        pass
+    return ""
+
+
 def commit_local_session(db, *, epoch, receipt):
     """Reserve the row, route and immutable policy together, before publication."""
     encoded = _json(receipt)
     receipt = json.loads(encoded)
     sid, route = receipt['session_id'], receipt['route']
     key = POLICY_PREFIX + sid
-    scope = _routing_scope_for(db)
+    scope = routing_scope_for(db)
     def write(conn):
         _epoch(conn, epoch)
         old = conn.execute('SELECT value FROM state_meta WHERE key=?', (key,)).fetchone()

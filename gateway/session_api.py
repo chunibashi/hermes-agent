@@ -162,8 +162,9 @@ def bind_api_steps(authority, session_id, *, hosted_dispatch=None, declared_key=
                 raise RuntimeStoreError('admission_conflict')
         if row is not None and row['session_key'] not in (None, '', route):
             raise RuntimeStoreError('admission_conflict')
-        existing = conn.execute("SELECT entry_json FROM gateway_routing WHERE scope='' AND session_key=?",
-                                (route,)).fetchone()
+        from hermes_state_local import routing_scope_for
+        existing = conn.execute("SELECT entry_json FROM gateway_routing WHERE scope=? AND session_key=?",
+                                (routing_scope_for(authority.db), route)).fetchone()
         if existing is not None and json.loads(existing[0])['session_id'] != session_id:
             raise RuntimeStoreError('admission_conflict')
         conn.execute('''INSERT INTO sessions(id,source,title,hidden,started_at) VALUES(?,?,?,?,?)
@@ -171,9 +172,9 @@ def bind_api_steps(authority, session_id, *, hosted_dispatch=None, declared_key=
                                                        int(storage_source == 'bot_room'), now.timestamp()))
         conn.execute('UPDATE sessions SET session_key=?,chat_id=?,user_id=?,chat_type=?,origin_json=? WHERE id=?',
                      (route, session_id, source.user_id, 'dm', _json(source.to_dict()), session_id))
-        conn.execute("INSERT INTO gateway_routing(scope,session_key,entry_json,updated_at) VALUES('',?,?,?) "
+        conn.execute("INSERT INTO gateway_routing(scope,session_key,entry_json,updated_at) VALUES(?,?,?,?) "
                      'ON CONFLICT(scope,session_key) DO UPDATE SET entry_json=excluded.entry_json',
-                     (route, _json(entry.to_dict()), now.timestamp()))
+                     (routing_scope_for(authority.db), route, _json(entry.to_dict()), now.timestamp()))
         conn.execute('INSERT INTO state_meta(key,value) VALUES(?,?)',
                      (_BINDING_PREFIX + session_id, _json(receipt)))
     yield partial(authority.db._execute_write, write)

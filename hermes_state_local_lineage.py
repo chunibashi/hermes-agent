@@ -6,7 +6,7 @@ not re-key idempotency digests, queued inputs, subscribers or uncertain claims.
 import json
 import time
 
-from hermes_state_local import POLICY_PREFIX
+from hermes_state_local import POLICY_PREFIX, routing_scope_for_conn
 from hermes_state_runtime import RuntimeStoreError, _epoch, _json
 import itertools
 
@@ -70,8 +70,8 @@ def advance_local_target(conn, parent_session_id, child_session_id, *, entry=Non
         if (receipt['session_id'] != logical_id or receipt['entry']['session_id'] != parent_session_id
                 or receipt['principal_id'] != parent['user_id'] or receipt['route'] != parent['session_key']):
             raise RuntimeStoreError('storage_unavailable')
-        route_row = conn.execute("SELECT entry_json FROM gateway_routing WHERE scope='' AND session_key=?",
-                                 (receipt['route'],)).fetchone()
+        route_row = conn.execute("SELECT entry_json FROM gateway_routing WHERE scope=? AND session_key=?",
+                                 (routing_scope_for_conn(conn), receipt['route'])).fetchone()
         routed = json.loads(route_row[0]) if route_row else None
         if routed is None or routed['session_id'] != parent_session_id:
             raise RuntimeStoreError('admission_conflict')
@@ -83,8 +83,8 @@ def advance_local_target(conn, parent_session_id, child_session_id, *, entry=Non
         if isinstance(exc, RuntimeStoreError):
             raise
         raise RuntimeStoreError('storage_unavailable') from exc
-    conn.execute("UPDATE gateway_routing SET entry_json=? WHERE scope='' AND session_key=?",
-                 (_json(candidate), receipt['route']))
+    conn.execute("UPDATE gateway_routing SET entry_json=? WHERE scope=? AND session_key=?",
+                 (_json(candidate), routing_scope_for_conn(conn), receipt['route']))
     conn.execute('UPDATE state_meta SET value=? WHERE key=?', (_json(receipt), key))
     conn.execute('UPDATE sessions SET runtime_revision=runtime_revision+1 WHERE id=?', (logical_id,))
 

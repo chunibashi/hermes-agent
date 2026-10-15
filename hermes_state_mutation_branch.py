@@ -2,7 +2,7 @@
 import json
 import uuid
 
-from hermes_state_local import POLICY_PREFIX
+from hermes_state_local import POLICY_PREFIX, routing_scope_for
 from hermes_state_local_lineage import validate_local_lineage
 from hermes_state_mutation_guards import require_idle
 from hermes_state_runtime import RuntimeStoreError, _json
@@ -76,7 +76,8 @@ def branch_in_transaction(db, conn, session_id, payload):
                                              source=db.TITLE_SOURCE_DERIVED)
     receipt = dict(profile_id=saved['profile_id'], principal_id=saved['principal_id'],
                    request_id=request_id, session_id=child, route=route, entry=entry.to_dict(), policy=policy)
-    conn.execute("INSERT INTO gateway_routing(scope,session_key,entry_json,updated_at) VALUES('',?,?,?)",
-                 (route, _json(entry.to_dict()), now.timestamp()))
+    conn.execute("INSERT INTO gateway_routing(scope,session_key,entry_json,updated_at) VALUES(?,?,?,?) "
+                 'ON CONFLICT(scope,session_key) DO UPDATE SET entry_json=excluded.entry_json',
+                 (routing_scope_for(db), route, _json(entry.to_dict()), now.timestamp()))
     conn.execute('INSERT INTO state_meta(key,value) VALUES(?,?)', (POLICY_PREFIX + child, _json(receipt)))
     return {session_id}, {'branched_session_id': child, 'copied_messages': len(ids)}
