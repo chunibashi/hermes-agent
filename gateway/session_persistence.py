@@ -241,8 +241,19 @@ class SessionPersistenceMixin:
 
     def _routing_db_method(self, name: str):
         """Bound ``_routing_db.<name>`` if the handle exists and has it, else None."""
-        method = getattr(self._routing_db or None, name, None)
-        return method if callable(method) else None
+        db = self._routing_db or None
+        method = getattr(db, name, None)
+        if not callable(method):
+            return None
+        # Publish the routing namespace on the handle: DB-side writers that reserve a route
+        # (hermes_state_local.commit_local_session) must target the SAME scope this store reads.
+        # A reservation in the legacy scope='' namespace is invisible to every modern reader but
+        # still blocks its own conflict check, refusing that route's creates forever.
+        try:
+            db.routing_scope = self._routing_scope()
+        except Exception:
+            pass
+        return method
 
     def _load_routing_rows_locked(self) -> bool:
         """Load state.db routing entries into ``_entries``; False when there is no loader or the

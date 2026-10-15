@@ -24,6 +24,11 @@ def _routing_scope_for(db) -> str:
         from pathlib import Path
         return str((Path(db.db_path).parent / "sessions").resolve())
     except Exception:
+        pass
+    try:
+        from hermes_constants import get_hermes_home
+        return str((get_hermes_home() / "sessions").resolve())
+    except Exception:
         return ""
 
 
