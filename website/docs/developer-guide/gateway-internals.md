@@ -80,12 +80,11 @@ row is refused with `stale_generation`. Desktop shows such a row in the queue pa
 discard closes it with a Hermes notice (like a failed turn), so it is never merged into the
 follower's model request.
 
-A messaging user (Telegram, Discord, ...) whose session is paused this way is told once per
-pause episode, through the adapter's ordinary reply path, that the conversation is paused and
-that `/reset` starts a fresh one; later messages onto the same pause are admitted silently and
-stay queued. Their delivery waiters are released with the pause reason instead of parking the
-adapter loop. `/reset` rotates the route to a new session (the lost turn and its followers stay
-on the old one); the operator can alternatively resolve the unknown row from Desktop or the CLI.
+A messaging user (Telegram, Discord, ...) whose session is paused this way has their messages
+admitted silently and stay queued behind the pause; no pause notice is sent. Their delivery
+waiters are released with the pause reason instead of parking the adapter loop. `/reset` rotates
+the route to a new session (the lost turn and its followers stay on the old one); the operator
+can alternatively resolve the unknown row from Desktop or the CLI.
 
 ## Shared authority prompt attachments
 

@@ -408,8 +408,7 @@ class SessionAuthority:
                             self, SessionRef(self.profile_id, sid), row, source=source)
                 self._require_admission_open()
                 self.sessions.setdefault(sid, LiveSession(source, route))
-                if any(row['status'] == 'unknown' for row in rows):
-                    raise RuntimeStoreError('unknown_execution')
+                # Rows lost to a crash (status 'unknown') never block new submissions.
                 self._schedule(SessionRef(self.profile_id, sid))
                 results[sid] = 'ready'
             except RuntimeStoreError as exc:
@@ -766,8 +765,8 @@ class SessionAuthority:
         # False asks the pump to re-read after a queued head changed during preflight.
         async with live.claim_gate, live.mutation_lock:
             pending = list_session_admissions(self.db, session_id=ref.session_id)
-            if any(row['status'] == 'unknown' for row in pending):
-                raise RuntimeStoreError('unknown_execution')
+            # Skip rows lost to a crash (status 'unknown'); they stay in the DB for audit
+            # but never block newer messages behind them.
             first = next((row for row in pending if row['status'] == 'queued'), None)
             from gateway.config import Platform
             if first is not None and live.source.platform == Platform.LOCAL:

@@ -174,9 +174,9 @@ def claim_session_input(db, *, epoch: int, session_id: str, _guard=None, head=_A
         if _guard is not None:
             _guard(conn)
         session = _session(conn, session_id)
-        blocked = conn.execute("SELECT status FROM session_admissions WHERE target_session_id=? AND status IN ('started','unknown')", (session_id,)).fetchall()
-        if any(row[0] == 'unknown' for row in blocked):
-            raise RuntimeStoreError('unknown_execution')
+        # Rows lost to a crash (status 'unknown') never block newer submissions or claims;
+        # only a live 'started' row (a turn actually running) blocks the FIFO head.
+        blocked = conn.execute("SELECT status FROM session_admissions WHERE target_session_id=? AND status='started'", (session_id,)).fetchall()
         from hermes_state_runtime_workers import worker_states
         workers = worker_states(conn, session_id)
         if 'unknown' in workers:

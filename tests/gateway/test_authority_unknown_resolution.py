@@ -10,7 +10,7 @@ from gateway.session import SessionSource, SessionStore
 from gateway.session_authority import LiveSession, initialize_session_authority
 from gateway.session_contract import SessionRef, Submission
 from gateway.session_controls import AuthorityConnection
-from hermes_state_runtime import RuntimeStoreError, claim_session_input, list_session_admissions
+from hermes_state_runtime import claim_session_input, list_session_admissions
 from tests.waiting import async_wait_until
 
 
@@ -147,14 +147,14 @@ async def test_discard_and_its_transcript_boundary_commit_atomically_on_the_phys
         assert 'error' in failed, failed
         rows = {r['admission_id']: r['status'] for r in list_session_admissions(db, session_id='s')}
         assert rows.get(unknown['admission_id']) == 'unknown', 'Discard committed without its transcript boundary'
-        with pytest.raises(RuntimeStoreError, match='unknown_execution'):
-            claim_session_input(db, epoch=authority.epoch, session_id='s')
+        # A crash-lost row no longer blocks the FIFO: the claim skips it and takes the follower.
+        claimed = claim_session_input(db, epoch=authority.epoch, session_id='s')
+        assert claimed is not None and claimed['admission_id'] == follower.admission_id
         db._execute_write(lambda c: c.execute('DROP TRIGGER deny_boundary'))
         retried = await viewer.dispatch({'id': 3, 'method': 'prompt.resolve_unknown', 'params': params})
         assert retried['result']['outcome'] == 'interrupted', retried
         assert db.latest_conversation_role('s-tip') == 'assistant'
         assert [m['role'] for m in db.get_messages('s') if m['role'] == 'assistant'] == []
-        assert claim_session_input(db, epoch=authority.epoch, session_id='s')['admission_id'] == follower.admission_id
     finally:
         await viewer.close()
         store.close_all_db_handles()

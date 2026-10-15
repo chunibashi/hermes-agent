@@ -10,7 +10,6 @@ from gateway.session_authority import LiveSession
 from gateway.session_contract import Principal, SessionRef, Submission
 from gateway.session_results import admission_result, finish_result
 from hermes_state_runtime import (
-    RuntimeStoreError,
     admit_session_input,
     begin_runtime_epoch,
     claim_session_input,
@@ -55,14 +54,13 @@ async def test_discard_closure_failure_keeps_unknown_fence_and_retry_is_exact(ow
     assert get_session_admission(owner.db, admission_id=first['admission_id'])['status'] == 'unknown'
     assert owner.db.latest_conversation_role(target) == 'user'
     assert Path(references[0]['path']).exists()
-    with pytest.raises(RuntimeStoreError, match='unknown_execution'):
-        claim_session_input(owner.db, epoch=owner.epoch, session_id='s')
+    # A crash-lost row no longer fences the FIFO: the claim skips it for the successor.
+    skipped = claim_session_input(owner.db, epoch=owner.epoch, session_id='s')
+    assert skipped['request_id'] == 'next'
     monkeypatch.setattr(session_results, 'close_discarded_turn', close)
     settled = await owner.resolve_unknown(actor, ref, first['admission_id'], claim['generation'])
     assert not Path(references[0]['path']).exists()
     assert owner.db.latest_conversation_role(target) == 'assistant'
-    successor = claim_session_input(owner.db, epoch=owner.epoch, session_id='s')
-    assert successor['request_id'] == 'next'
     owner.db.append_message(target, 'user', 'FOLLOWER')
     assert await owner.resolve_unknown(actor, ref, first['admission_id'], claim['generation']) == settled
     assert owner.db.latest_conversation_role(target) == 'user', 'retry closed a successor turn'

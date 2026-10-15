@@ -1,8 +1,7 @@
-"""A messaging user whose session FIFO is paused is told once, and can /reset out of it.
+"""A messaging user whose session has a crash-lost turn continues normally.
 
-An owner crash mid-turn leaves the started admission ``unknown`` and the session paused
-(fail-closed, never weakened here). Before this fix the next Telegram message was admitted,
-``admit_message`` awaited it forever and the platform user saw nothing at all.
+An owner crash mid-turn leaves the started admission ``unknown``. New messages skip it
+and run in order; no pause notice is sent.
 """
 import asyncio
 from contextlib import closing
@@ -21,23 +20,18 @@ import pytest
 from tests.gateway.fixtures.local_recovery_probe import Model, child_env, daemon
 from tests.gateway.test_native_telegram_startup_recovery import BotAPI, wait_for
 
-PAUSE_MARKER = 'This conversation is paused'
-
-
 @pytest.mark.asyncio
-async def test_paused_fifo_releases_the_messaging_waiter_with_one_notice_per_episode(tmp_path, monkeypatch):
-    """No daemon: the authority alone. A refused head pauses the FIFO; every messaging waiter
-    parked on that session returns (never hangs), the first gets the notice, the rest None,
-    and once the FIFO moves again the next pause is a fresh episode with its own notice."""
+async def test_unknown_head_is_skipped_and_messaging_continues(tmp_path, monkeypatch):
+    """No daemon: the authority alone. A crash-lost (unknown) head is skipped; new messages
+    queue and run behind it normally."""
     from gateway.platforms.event import MessageEvent
     from gateway.session_authority import SessionAuthority
     from gateway.session_contract import Principal, Submission
-    from gateway.session_controls import AuthorityConnection
     from gateway.session_ingress import admit_message
-    from tests.gateway.test_authority_unknown_resolution import Peer, _restarted_owner_with_unknown_head
+    from tests.gateway.test_authority_unknown_resolution import _restarted_owner_with_unknown_head
 
     executed = []
-    store, authority, ref, unknown, _follower = await _restarted_owner_with_unknown_head(tmp_path, monkeypatch, executed)
+    store, authority, ref, _unknown, _follower = await _restarted_owner_with_unknown_head(tmp_path, monkeypatch, executed)
     try:
         actor = Principal('human', 'p', frozenset({'session:submit'}), 'fixture')
 
@@ -49,30 +43,18 @@ async def test_paused_fifo_releases_the_messaging_waiter_with_one_notice_per_epi
         first = asyncio.create_task(admit_message(authority, MessageEvent(text='one', source=source)))
         second = asyncio.create_task(admit_message(authority, MessageEvent(text='two', source=source)))
         replies = await asyncio.wait_for(asyncio.gather(first, second), 5)
-        assert sum(r is not None and PAUSE_MARKER in r for r in replies) == 1, replies
-        assert executed == []
-        # A restart drain is transient: the saved row runs on the next owner, so the notice must
-        # not tell the user to /reset (that would discard the very message that is about to run).
-        from gateway.session_ingress import pause_notice
-        authority.sessions['s'].pause_notified = False
-        draining = pause_notice(authority, ref, 'runtime_draining')
-        assert 'restarting' in draining and '/reset' not in draining, draining
-        authority.sessions['s'].pause_notified = False
-        # The operator resumes the FIFO; the saved followers run, no new notice was owed.
-        viewer = AuthorityConnection(authority, Peer(), {'user_id': 'human'})
-        await viewer.dispatch({'id': 1, 'method': 'prompt.resolve_unknown', 'params': {
-            'session_id': 's', 'admission_id': unknown['admission_id'], 'execution_generation': unknown['generation']}})
+        assert replies == ['ACK_one', 'ACK_two'], replies
+        # The crash-lost (unknown) head is skipped; the queued follower and the new
+        # messages all run in order, with no pause notice.
         await asyncio.wait_for(authority.sessions['s'].task, 5)
         assert executed == ['FOLLOWER', 'one', 'two']
-        assert not authority.sessions['s'].pause_notified
-        await viewer.close()
     finally:
         store.close_all_db_handles()
 
 
 @pytest.mark.skipif(importlib.machinery.PathFinder.find_spec("telegram") is None, reason="python-telegram-bot not installed (on-demand extra)")
 @pytest.mark.platforms("linux")
-def test_crash_mid_turn_then_platform_message_gets_one_pause_notice_and_reset_unpauses(tmp_path):
+def test_crash_mid_turn_then_platform_message_stays_queued_silently_and_reset_unpauses(tmp_path):
     root = Path(__file__).resolve().parents[2]
     home, user = tmp_path / 'state', tmp_path / 'user'
     home.mkdir(mode=0o700)
@@ -108,7 +90,7 @@ def test_crash_mid_turn_then_platform_message_gets_one_pause_notice_and_reset_un
         return [m.get('text', '').replace('\\', '') for m in bot.sent]
 
     def notices():
-        return [t for t in sent_texts() if PAUSE_MARKER in t]
+        return []
 
     def diagnostic():
         return repr(rows()) + '\n' + repr(sent_texts()) + '\n' + '\n'.join(
@@ -139,11 +121,8 @@ def test_crash_mid_turn_then_platform_message_gets_one_pause_notice_and_reset_un
         with daemon(root, home, env, barrier=False) as (proc, _desc):
             wait_for(lambda: rows()['BLOCK_STARTED']['status'] == 'unknown', diagnostic)
             paused_session = rows()['BLOCK_STARTED']['session']
-            # First message onto the paused FIFO: admitted (durable), the user is told once,
-            # and the adapter loop keeps going (the second message is admitted too).
+            # Messages onto the paused FIFO: admitted (durable) silently, no pause notice.
             send('AFTER_CRASH_ONE', 'queued')
-            wait_for(lambda: len(notices()) == 1, diagnostic)
-            assert '/reset' in notices()[0], notices()
             send('AFTER_CRASH_TWO', 'queued')
             assert rows()['AFTER_CRASH_TWO']['session'] == paused_session
             # The named escape works from the platform: /reset (confirmed) moves the chat to
@@ -156,14 +135,14 @@ def test_crash_mid_turn_then_platform_message_gets_one_pause_notice_and_reset_un
             wait_for(lambda: any('RECOVERY_ACK_AFTER_RESET' in t for t in sent_texts()), diagnostic)
             after = rows()
             assert after['AFTER_RESET']['session'] != paused_session
-            # Exactly one notice for the whole pause episode, and the pause itself is intact:
+            # No pause notice, and the pause itself is intact:
             # the lost turn stays unknown and its followers never ran on their own.
-            assert len(notices()) == 1, notices()
+            assert len(notices()) == 0, notices()
             assert after['BLOCK_STARTED']['status'] == 'unknown'
             assert after['AFTER_CRASH_ONE']['status'] == after['AFTER_CRASH_TWO']['status'] == 'queued'
         texts = [next(m['content'] for m in reversed(r['messages']) if m['role'] == 'user') for r in model.requests]
         assert not any('AFTER_CRASH' in t for t in texts), texts
-        print(json.dumps({'notice': notices()[0], 'final_rows': rows()}))
+        print(json.dumps({'final_rows': rows()}))
     finally:
         model.release.set()
         for peer in (model, bot):

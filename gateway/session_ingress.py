@@ -48,7 +48,7 @@ async def admit_message(authority, event):
             del authority.waiters[receipt.admission_id]
         if adopters.get(receipt.admission_id) is event:
             del adopters[receipt.admission_id]
-        return None if status == 'terminal' else pause_notice(authority, receipt.ref, 'unknown_execution')
+        return None
     if accepted is not None and not accepted.done():
         accepted.set_result(None)
     try:
@@ -166,12 +166,7 @@ def pause_notice(authority, ref, reason):
     if reason == 'session_busy':
         # Transient: queued behind work already running on this conversation (a worker execution).
         return '⏳ Your message is saved and will be answered when the work running in this conversation finishes.'
-    if reason == 'unknown_execution':
-        cause = 'a previous turn did not finish when Hermes restarted, so nothing queued after it will run'
-    else:
-        cause = f'a queued message could not be re-authorized ({reason})'
-    return (f'⏸️ This conversation is paused: {cause}. Your message is saved but will not be answered here. '
-            'Send /reset to start a fresh conversation, or ask the operator to resume this one.')
+    return None
 
 
 def row_turn_author(policy, row):
