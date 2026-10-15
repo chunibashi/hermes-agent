@@ -9,12 +9,31 @@ API_BINDING_PREFIX = 'gateway.api.binding.v1.'
 API_DECLARED_PREFIX = 'gateway.api.conversation.v1.'
 
 
+def _routing_scope_for(db) -> str:
+    """The namespace this store's routing index actually lives in.
+
+    ``SessionStore`` persists and loads ``gateway_routing`` rows under ``_routing_scope()`` (the
+    resolved sessions_dir). Reading/writing the legacy ``scope=''`` namespace here instead makes
+    the conflict check consult rows the live store never reads — a stale empty-scope row for the
+    same route then refuses EVERY future create with ``admission_conflict``, forever, because the
+    modern writers only ever replace their own scope."""
+    scope = getattr(db, "routing_scope", None)
+    if scope:
+        return str(scope)
+    try:
+        from pathlib import Path
+        return str((Path(db.db_path).parent / "sessions").resolve())
+    except Exception:
+        return ""
+
+
 def commit_local_session(db, *, epoch, receipt):
     """Reserve the row, route and immutable policy together, before publication."""
     encoded = _json(receipt)
     receipt = json.loads(encoded)
     sid, route = receipt['session_id'], receipt['route']
     key = POLICY_PREFIX + sid
+    scope = _routing_scope_for(db)
     def write(conn):
         _epoch(conn, epoch)
         old = conn.execute('SELECT value FROM state_meta WHERE key=?', (key,)).fetchone()
@@ -37,7 +56,8 @@ def commit_local_session(db, *, epoch, receipt):
         if ('legacy_session_id' not in receipt and
                 conn.execute('SELECT 1 FROM sessions WHERE id=?', (sid,)).fetchone()):
             raise RuntimeStoreError('storage_unavailable')
-        if conn.execute("SELECT 1 FROM gateway_routing WHERE scope='' AND session_key=?", (route,)).fetchone():
+        if conn.execute("SELECT 1 FROM gateway_routing WHERE scope=? AND session_key=?",
+                        (scope, route)).fetchone():
             raise RuntimeStoreError('admission_conflict')
         if 'legacy_session_id' in receipt:
             from hermes_state_local_migration import bind_legacy_target
@@ -50,8 +70,8 @@ def commit_local_session(db, *, epoch, receipt):
             ON CONFLICT(id) DO NOTHING''',
             (sid, policy['source'], receipt['principal_id'], route, entry['origin']['chat_id'],
              policy['model'], _row_cwd(policy), db._own_profile_name(), _json(entry['origin']), started))
-        conn.execute("INSERT INTO gateway_routing(scope,session_key,entry_json,updated_at) VALUES('',?,?,?)",
-                     (route, _json(entry), started))
+        conn.execute("INSERT INTO gateway_routing(scope,session_key,entry_json,updated_at) VALUES(?,?,?,?)",
+                     (scope, route, _json(entry), started))
         conn.execute('INSERT INTO state_meta(key,value) VALUES(?,?)', (key, encoded))
         return receipt
     return db._execute_write(write)
