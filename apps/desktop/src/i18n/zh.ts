@@ -4213,6 +4213,8 @@ export const zhOverrides = {
     popOut: '弹出',
     linkHint: '⌘/Ctrl+点击在预览面板打开',
     sourceLineTitle: '点击选择 · shift 点击扩展 · 拖到输入框',
+    sourceSelectAllCopied: count => `已将全部 ${count} 行复制到剪贴板`,
+    sourceSelectAllFailed: '无法从预览中复制完整文件',
     source: '源码',
     renderedPreview: '预览',
     diff: '差异',

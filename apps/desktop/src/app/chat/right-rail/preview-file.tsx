@@ -17,9 +17,10 @@ import { HERMES_PATHS_MIME } from '@/app/chat/hooks/use-composer-actions'
 import { RichCodeBlock } from '@/components/assistant-ui/embeds'
 import { CodeEditor } from '@/components/chat/code-editor'
 import { FileDiffPanel } from '@/components/chat/diff-lines'
-import { chunkTextLines, useFixedRowWindow } from '@/components/chat/fixed-row-window'
+import { chunkTextLines, SOURCE_SELECT_ALL_EVENT, useFixedRowWindow } from '@/components/chat/fixed-row-window'
 import { LazyShiki as ShikiHighlighter } from '@/components/chat/shiki-highlighter'
 import { PageLoader } from '@/components/page-loader'
+import { writeClipboardText } from '@/components/ui/copy-button'
 import { Tip } from '@/components/ui/tooltip'
 import { translateNow, useI18n } from '@/i18n'
 import {
@@ -48,6 +49,7 @@ import {
 } from '@/lib/preview-markdown-links'
 import { previewTargetFromMarkdownHref } from '@/lib/preview-targets'
 import { cn } from '@/lib/utils'
+import { notify } from '@/store/notifications'
 import { markPreviewTabMissing, openPreview, type PreviewTarget } from '@/store/preview'
 import { setPreviewDirty } from '@/store/preview-edit'
 import { $connection, $currentCwd } from '@/store/session'
@@ -636,6 +638,10 @@ export function SourceView({ filePath, language, text }: { filePath?: string; la
   })
 
   const visibleChunks = chunks.slice(startChunk, endChunk + 1)
+  // Windowed = some rows are virtualized away (before/after spacers are
+  // non-zero). Native Ctrl+A then only reaches the mounted rows; the select-all
+  // guard spots the marker and routes to us, and we copy the whole document.
+  const windowed = beforeRows > 0 || afterRows > 0
   const [selection, setSelection] = useState<LineSelection | null>(null)
   const inSelection = (line: number) => selection != null && line >= selection.start && line <= selection.end
 
@@ -701,8 +707,39 @@ export function SourceView({ filePath, language, text }: { filePath?: string; la
     return () => window.removeEventListener('keydown', onKeyDown, { capture: true })
   }, [filePath, selection])
 
+  // Ctrl+A in a windowed source list must select the WHOLE file, but only the
+  // rows near the viewport are mounted — a DOM range can't reach the rest.
+  // The select-all guard spots the windowed marker and routes the gesture here
+  // as SOURCE_SELECT_ALL_EVENT; answer by copying the full document.
+  useEffect(() => {
+    const scroller = scrollerRef.current
+
+    if (!scroller || !windowed) {
+      return
+    }
+
+    const onSelectAll = () => {
+      void writeClipboardText(text)
+        .then(() => {
+          notify({ kind: 'success', message: translateNow('preview.sourceSelectAllCopied', totalLines) })
+        })
+        .catch(() => {
+          notify({ kind: 'error', message: translateNow('preview.sourceSelectAllFailed') })
+        })
+    }
+
+    scroller.addEventListener(SOURCE_SELECT_ALL_EVENT, onSelectAll)
+
+    return () => scroller.removeEventListener(SOURCE_SELECT_ALL_EVENT, onSelectAll)
+  }, [scrollerRef, text, totalLines, windowed])
+
   return (
-    <div className="h-full overflow-auto" onScroll={onScroll} ref={scrollerRef}>
+    <div
+      className="h-full overflow-auto"
+      data-source-windowed={windowed ? '' : undefined}
+      onScroll={onScroll}
+      ref={scrollerRef}
+    >
       <div className="grid min-w-max grid-cols-[auto_minmax(0,1fr)] font-mono text-[0.7rem] leading-relaxed">
         {beforeRows > 0 && <div aria-hidden className="col-span-2" style={{ height: beforeRows * SOURCE_LINE_PX }} />}
         {visibleChunks.map(chunk => (

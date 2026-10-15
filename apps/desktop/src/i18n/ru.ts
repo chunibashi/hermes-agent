@@ -3454,6 +3454,8 @@ export const ruOverrides = {
     openInBrowser: 'Открыть в браузере',
     linkHint: '⌘/Ctrl-клик — панель предпросмотра',
     sourceLineTitle: 'Клик — выбрать · Shift-клик — расширить · перетащите в композер',
+    sourceSelectAllCopied: count => `Все ${count} строк скопированы в буфер обмена`,
+    sourceSelectAllFailed: 'Не удалось скопировать файл целиком из предпросмотра',
     source: 'ИСТОЧНИК',
     renderedPreview: 'ПРЕДПРОСМОТР',
     diff: 'DIFF',

@@ -202,6 +202,40 @@ describe('useSelectAllGuard', () => {
     expect(surface.isConnected).toBe(true)
   })
 
+  it('routes Ctrl+A to a windowed source view instead of selecting mounted rows', () => {
+    mountGuard()
+
+    const surface = makeSurface()
+    // A windowed source scroller: only rows near the viewport are mounted, so
+    // a DOM range over the pane would silently drop the rest of the file.
+    const scroller = document.createElement('div')
+    scroller.dataset.sourceWindowed = ''
+    const pane = document.createElement('div')
+    pane.dataset.selectableText = 'true'
+    pane.textContent = 'mounted line 1\nmounted line 2'
+    scroller.appendChild(pane)
+    document.body.appendChild(scroller)
+
+    // User clicked inside the windowed source view.
+    pane.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, composed: true }))
+    setActiveElement(document.body)
+
+    let routed = 0
+    scroller.addEventListener('hermes:source-select-all', () => {
+      routed += 1
+    })
+
+    const event = fireKey('a', { ctrl: true })
+
+    // The guard must NOT build a DOM range (that would select only the mounted
+    // rows) — it delegates to the view via the custom event.
+    expect(event.defaultPrevented).toBe(true)
+    expect(routed).toBe(1)
+    expect(selectableText()).toBe('')
+    // The chat transcript stays OUT of the selection.
+    expect(surface.isConnected).toBe(true)
+  })
+
   it('lets Ctrl+A pass through natively when focus is an editable inside a preview pane', () => {
     mountGuard()
 

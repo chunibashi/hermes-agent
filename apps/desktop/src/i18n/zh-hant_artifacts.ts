@@ -74,6 +74,8 @@ export const zhHantArtifacts = {
     popOut: '彈出',
     linkHint: '⌘/Ctrl+點擊在預覽窗格開啟',
     sourceLineTitle: '點擊選取 · shift 點擊擴展 · 拖曳至輸入框',
+    sourceSelectAllCopied: count => `已將全部 ${count} 行複製到剪貼簿`,
+    sourceSelectAllFailed: '無法從預覽中複製完整檔案',
     source: '原始碼',
     renderedPreview: '預覽',
     diff: '差異',

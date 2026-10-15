@@ -4795,6 +4795,8 @@ export const frOverrides = {
     popOut: 'Détacher',
     linkHint: "⌘/Ctrl-clic pour le panneau d'aperçu",
     sourceLineTitle: 'Clic pour sélectionner · shift-clic pour étendre · glisser vers le compositeur',
+    sourceSelectAllCopied: count => `Copié les ${count} lignes dans le presse-papiers`,
+    sourceSelectAllFailed: "Impossible de copier le fichier complet depuis l'aperçu",
     source: 'SOURCE',
     renderedPreview: 'APERÇU',
     diff: 'DIFF',

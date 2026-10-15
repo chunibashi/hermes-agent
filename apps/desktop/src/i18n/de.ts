@@ -4785,6 +4785,8 @@ export const deOverrides = {
     popOut: 'Abdocken',
     linkHint: '⌘/Strg-Klick für das Vorschau-Fenster',
     sourceLineTitle: 'Zum Auswählen klicken · zum Erweitern Umschalt-Klick · zum Composer ziehen',
+    sourceSelectAllCopied: count => `Alle ${count} Zeilen in die Zwischenablage kopiert`,
+    sourceSelectAllFailed: 'Die vollständige Datei konnte nicht aus der Vorschau kopiert werden',
     source: 'QUELLE',
     renderedPreview: 'VORSCHAU',
     diff: 'DIFF',

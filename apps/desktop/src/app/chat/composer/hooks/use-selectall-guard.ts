@@ -28,6 +28,8 @@
  */
 import { useEffect } from 'react'
 
+import { SOURCE_SELECT_ALL_EVENT, SOURCE_WINDOWED_SELECTOR } from '@/components/chat/fixed-row-window'
+
 /** Containers whose text is selectable by CSS contract (styles.css). */
 const MESSAGE_SELECTOR = [
   '[data-slot="aui_user-message-root"]',
@@ -243,6 +245,19 @@ export function useSelectAllGuard(): void {
         // Keyboard navigation: focus (not a pointer gesture) may sit inside a
         // non-chat selectable pane — scope to it before falling back to chat.
         root = active.closest<Element>(DOCUMENT_SELECTOR)
+      }
+
+      // A windowed source view (file preview / artifact source) only mounts
+      // the rows near the viewport. A DOM range over `root` would select just
+      // those, silently dropping the rest of the file — worse than useless.
+      // Delegate to the view instead: it answers SOURCE_SELECT_ALL_EVENT by
+      // copying its FULL text to the clipboard.
+      const windowedSource = root?.closest<Element>(SOURCE_WINDOWED_SELECTOR) ?? null
+
+      if (windowedSource) {
+        windowedSource.dispatchEvent(new CustomEvent(SOURCE_SELECT_ALL_EVENT))
+
+        return
       }
 
       selectAllSelectable(root ?? document.querySelector('[data-chat-surface]:not([data-chat-unfocused])') ?? document.body)

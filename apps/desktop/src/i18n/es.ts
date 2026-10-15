@@ -4780,6 +4780,8 @@ export const esOverrides = {
     popOut: 'Desacoplar',
     linkHint: '⌘/Ctrl-clic para acceder al panel de vista previa',
     sourceLineTitle: 'Haz clic para seleccionar · Mayús-clic para ampliar · arrastra al compositor',
+    sourceSelectAllCopied: count => `Se copiaron las ${count} líneas al portapapeles`,
+    sourceSelectAllFailed: 'No se pudo copiar el archivo completo desde la vista previa',
     source: 'FUENTE',
     renderedPreview: 'VISTA PREVIA',
     diff: 'Diferencias',

@@ -3155,6 +3155,8 @@ export const jaOverrides = {
     popOut: 'ポップアウト',
     linkHint: '⌘/Ctrl+クリックでプレビューペイン',
     sourceLineTitle: 'クリックして選択 · Shift クリックで拡張 · コンポーザーにドラッグ',
+    sourceSelectAllCopied: count => `全 ${count} 行をクリップボードにコピーしました`,
+    sourceSelectAllFailed: 'プレビューからファイル全体をコピーできませんでした',
     source: 'ソース',
     renderedPreview: 'プレビュー',
     diff: '差分',

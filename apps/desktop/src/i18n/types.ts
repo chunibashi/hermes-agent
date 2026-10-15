@@ -3803,6 +3803,8 @@ export interface Translations extends NoticeTranslations {
     popOut: string
     linkHint: string
     sourceLineTitle: string
+    sourceSelectAllCopied: (count: number) => string
+    sourceSelectAllFailed: string
     source: string
     renderedPreview: string
     diff: string

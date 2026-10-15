@@ -1,6 +1,18 @@
 import type { RefObject, UIEvent } from 'react'
 import { useCallback, useLayoutEffect, useRef, useState } from 'react'
 
+/**
+ * Contract between a windowed source view and the app-wide select-all guard.
+ * A virtualized source list only mounts the rows near the viewport, so native
+ * Ctrl+A (and the guard's DOM-range select) can never reach the unmounted
+ * tail. A windowed view marks its scroller with the `data-source-windowed`
+ * attribute; the guard sees the marker and, instead of building a range over
+ * the mounted rows, dispatches `SOURCE_SELECT_ALL_EVENT` on the scroller —
+ * the view answers by copying its FULL text to the clipboard.
+ */
+export const SOURCE_WINDOWED_SELECTOR = '[data-source-windowed]'
+export const SOURCE_SELECT_ALL_EVENT = 'hermes:source-select-all'
+
 export interface LineChunk<T> {
   lines: T[]
   start: number

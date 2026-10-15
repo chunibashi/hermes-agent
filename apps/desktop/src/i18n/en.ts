@@ -4368,6 +4368,8 @@ export const en: Translations = {
     popOut: 'Pop out',
     linkHint: '⌘/Ctrl-click for preview pane',
     sourceLineTitle: 'Click to select · shift-click to extend · drag to composer',
+    sourceSelectAllCopied: count => `Copied all ${count} lines to the clipboard`,
+    sourceSelectAllFailed: 'Could not copy the full file from the preview',
     source: 'SOURCE',
     renderedPreview: 'PREVIEW',
     diff: 'DIFF',

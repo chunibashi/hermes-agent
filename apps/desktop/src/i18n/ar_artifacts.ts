@@ -72,6 +72,8 @@ export const arArtifacts = {
     popOut: 'إخراج',
     linkHint: '⌘/Ctrl-نقر لجزء المعاينة',
     sourceLineTitle: 'انقر للتحديد · shift-نقر للتوسيع · اسحب إلى المُنشئ',
+    sourceSelectAllCopied: count => `تم نسخ كل الأسطر (${count}) إلى الحافظة`,
+    sourceSelectAllFailed: 'تعذّر نسخ الملف كاملًا من المعاينة',
     source: 'المصدر',
     renderedPreview: 'المعاينة',
     diff: 'الفرق',
