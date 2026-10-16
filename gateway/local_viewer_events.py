@@ -56,10 +56,20 @@ def wire(turn, agent) -> dict:
 
 
 def show_reasoning(turn) -> bool:
-    """The session's ``show_reasoning`` display flag (``config.set``), off until a viewer sets it."""
+    """Whether a local-viewer turn streams reasoning events.
+
+    A session-scoped explicit toggle (``config.set show_reasoning`` / ``/reasoning``)
+    wins; otherwise fall back to the runner's ``display.show_reasoning`` config so a
+    viewer that never sets the session flag (Desktop) still streams the reasoning the
+    user enabled in config.yaml. Only local-viewer turns reach this — messaging routes
+    (Telegram et al.) never call ``wire``/``publish_progress``, so they are untouched.
+    """
     owner = getattr(turn, "_approval_owner", None)
     live = owner[0].sessions.get(owner[1]) if owner is not None else None
-    return getattr(live, "show_reasoning", None) is True
+    session_flag = getattr(live, "show_reasoning", None)
+    if session_flag is not None:
+        return session_flag is True
+    return bool(getattr(getattr(turn, "_runner", None), "_show_reasoning", False))
 
 
 def publish_progress(turn, event_type, name, preview, kwargs) -> None:

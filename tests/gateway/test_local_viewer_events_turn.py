@@ -154,6 +154,31 @@ def test_progress_projects_reasoning_available_and_moa(monkeypatch, classic):
         EVENTS[kind].payload.model_validate(payload)
 
 
+def test_reasoning_falls_back_to_config_for_a_viewer_that_never_set_the_session_flag():
+    """Desktop never pushes a session ``show_reasoning``; the runner's config default
+    must still gate reasoning events (regression: local-viewer reasoning stopped
+    rendering after the canonical-gateway move, which made the flag off-until-set)."""
+    from gateway import local_viewer_events
+    published = []
+    live = SimpleNamespace(tool_progress_mode=None)  # no show_reasoning attribute
+    turn = _turn(Platform.LOCAL, published, live=live)
+    turn._runner = SimpleNamespace(config=None, _delivery_adapter_for=lambda source: None,
+                                   _show_reasoning=True)
+    agent = SimpleNamespace(tool_gen_callback=None, _print_fn=None, thinking_callback=None,
+                            reaction_callback=None, reasoning_callback=None)
+    previous = local_viewer_events.wire(turn, agent)
+    assert agent.reasoning_callback is not None, 'config-enabled viewer must get the reasoning sink'
+    agent.reasoning_callback('step 1')
+    assert published == [('reasoning.delta', {'text': 'step 1'})]
+    local_viewer_events.restore(agent, previous)
+    # And the whole-block relay rides the same gate.
+    published.clear()
+    turn._runner = SimpleNamespace(config=None, _delivery_adapter_for=lambda source: None,
+                                   _show_reasoning=False)
+    turn.progress_callback('reasoning.available', '_thinking', 'because', None)
+    assert published == []
+
+
 def test_messaging_progress_never_publishes_reasoning():
     published = []
     turn = _turn(Platform.TELEGRAM, published, live=SimpleNamespace(tool_progress_mode=None, show_reasoning=True))
