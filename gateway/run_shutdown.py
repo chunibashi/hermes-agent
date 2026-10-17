@@ -869,6 +869,52 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
         from gateway.run import _INTERRUPT_REASON_GATEWAY_RESTART, _INTERRUPT_REASON_GATEWAY_SHUTDOWN
         return _INTERRUPT_REASON_GATEWAY_RESTART if self._restart_requested else _INTERRUPT_REASON_GATEWAY_SHUTDOWN
 
+    def _recovery_pending_path(self) -> Path:
+        """Where the restart records which sessions were alive so the replacement wakes them."""
+        from hermes_constants import get_hermes_home
+        return Path(get_hermes_home()) / "gateway" / "restart_recovery_pending.json"
+
+    def _persist_restart_recovery_sessions(self) -> None:
+        """Record the sessions alive right now, durably, for the replacement gateway.
+
+        A restart is the user asking the AI to speak again on boot. ``restart_after_turn_timeout``
+        (1800s default) lets the active turn FINISH inside the after-turn wait, so the drain's
+        resume_pending pre-mark finds nothing to mark (the session left ``_running_agents`` as
+        completed) — the replacement gateway would otherwise stay silent. The canonical local
+        session's admission row is likewise settled ``completed``, not ``interrupted``. So we
+        persist the session keys we know are actively in use RIGHT NOW; on boot
+        ``_schedule_restart_recovery_wakes`` reads this file and delivers a recovery wake to
+        each one, then deletes it (natural dedupe: the file is one shot per restart).
+        """
+        try:
+            keys: set[str] = set()
+            # In-process agents (messaging / relay turns) live in _running_agents.
+            for _k, _agent in getattr(self, "_running_agents", {}).items():
+                if _agent is not None:
+                    keys.add(_k)
+            # Canonical local sessions run in authority managed turns, NOT _running_agents.
+            try:
+                from gateway.config import Platform as _EventPlatform
+                from gateway.session_authorities import all_authorities
+                for authority in all_authorities(self):
+                    for sid, live in list(authority.sessions.items()):
+                        src = getattr(live, "source", None)
+                        route = getattr(live, "route", None)
+                        if route and src is not None and getattr(src, "platform", None) == _EventPlatform.LOCAL:
+                            keys.add(route)
+            except Exception as exc:
+                logger.debug("Recovery-scope authority scan failed: %s", exc)
+            if not keys:
+                return
+            path = self._recovery_pending_path()
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps({
+                "written_at": time.time(), "pid": os.getpid(), "keys": sorted(keys),
+            }), encoding="utf-8")
+            logger.info("Restart recovery: recorded %d live session(s) for the replacement gateway", len(keys))
+        except Exception as exc:
+            logger.debug("Restart recovery record failed: %s", exc)
+
     async def _mark_running_sessions_resume_pending(self, log_prefix: str) -> list:
         """Mark every non-pending running session resume_pending; returns the keys marked."""
         from gateway.run import _AGENT_PENDING_SENTINEL
@@ -1683,6 +1729,10 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
         self._restart_task_started = True
         # Refuse new turns; keep ``_running`` True so the active turn can still deliver its final response.
         self._draining = True
+        # Record the sessions alive right now so the replacement gateway wakes them (the AI speaks
+        # first after a restart). Must happen BEFORE the after-turn wait, which normally lets the
+        # active turn finish and leaves nothing for the drain to mark.
+        self._persist_restart_recovery_sessions()
         from gateway.drain_control import open_restart_wait
         open_restart_wait(self)  # clients may still answer a turn parked on approval/clarify (#139041)
         # The restart's after-turn wait is a drain window too: pollers of GET /v1/runs/{id} must see
@@ -1690,6 +1740,15 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
         self._mark_api_runs_shutdown_requested()
 
         async def _run_restart() -> None:
+            # A restart is the user asking the AI to speak again on boot. Mark the
+            # sessions active RIGHT NOW, before the after-turn wait lets them finish:
+            # a turn that completes during that wait leaves _running_agents empty, so
+            # the drain's pre-mark finds nothing to mark and the replacement gateway
+            # stays silent (restart_after_turn_timeout defaults to 1800s, so this is
+            # the normal case, not an edge case).
+            with _log_suppressed(logging.DEBUG, "Restart pre-mark resume_pending failed: %s"):
+                from gateway.run import GatewayRunner
+                await GatewayRunner._mark_running_sessions_resume_pending(self, "restart pre-mark")
             await self._await_active_work_before_restart()
             # Detached helper only AFTER the after-turn wait, or its drain_timeout+5 deadline fires mid-turn.
             if detached:
@@ -1892,6 +1951,15 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
             _deferred_at_start, ctx.deferred_count(),
         )
         if ctx.timed_out:
+            return
+        # On a RESTART the pre-drain markers are load-bearing: the replacement
+        # gateway must auto-continue — the AI speaks first — even when the turn
+        # finished naturally inside the drain window. `restart_drain_timeout`
+        # (default 0, user config may raise it to e.g. 180s) makes a gentle drain
+        # the norm, and clearing the marker here would then leave the restarted
+        # conversation silently waiting for a user message. Only plain shutdowns
+        # clear markers for turns that finished during the drain window.
+        if self._restart_requested:
             return
         # Graceful drain: clear the pre-drain resume_pending markers so sessions that finished
         # during the drain window don't carry a stale flag.

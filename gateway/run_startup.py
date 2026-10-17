@@ -615,6 +615,14 @@ class GatewayStartupMixin:
             # Legacy synthetic resume must not race their restored FIFO.
             from gateway.session_authorities import all_authorities, holds_admission
             if any(holds_admission(authority, entry.session_id) for authority in all_authorities(self)):
+                # Canonical session: the admission system owns the FIFO. A turn
+                # cleanly interrupted by a RESTART left a settled admission and an
+                # empty FIFO — nothing would ever run again, so the AI could never
+                # speak first. Deliver a recovery wake (the same internal-notification
+                # channel background-process completions use) so the conversation
+                # resumes by itself. A still-paused unknown head simply queues the
+                # wake behind it, like any other input.
+                self._schedule_recovery_wake(entry)
                 continue
             # Epoch math: the marker was stamped naive-local by the previous process, possibly
             # on the other side of a DST change; wall-clock subtraction is off by the shift.
@@ -654,6 +662,133 @@ class GatewayStartupMixin:
         if scheduled:
             logger.info("Scheduled auto-resume for %d restart-interrupted session(s)", scheduled)
         return scheduled
+
+    async def _maybe_recovery_wake(self, entry) -> bool:
+        """Deliver a recovery wake to a canonical session whose turn was cleanly
+        interrupted by a restart (settled admission, empty FIFO). Returns True
+        when the wake was accepted by the adapter (scheduled for the FIFO)."""
+        try:
+            # Candidates here passed the gates when the list was built, but the
+            # freshness window can expire while we are still iterating — never
+            # wake a stale resume marker.
+            from gateway.run import _auto_continue_freshness_window, _is_fresh_gateway_interruption
+            marker = entry.last_resume_marked_at or entry.updated_at
+            if not _is_fresh_gateway_interruption(marker, window_secs=_auto_continue_freshness_window()):
+                return False
+            if self._is_session_running(entry.session_key):
+                return False
+            source = self._restored_source(entry)
+            adapter = self._delivery_adapter_for(source)
+            if adapter is None:
+                logger.debug("Skipping recovery wake for %s: adapter not ready",
+                             entry.session_key)
+                return False
+            from gateway.wake import admit_internal_event
+            from gateway.platforms.event import MessageEvent, MessageType
+            event = MessageEvent(
+                text="", message_type=MessageType.TEXT, source=source, internal=True,
+                metadata={"notification_category": "recovery"})
+            await admit_internal_event(adapter, event)
+            logger.info("Delivered recovery wake to %s after clean restart", entry.session_key)
+            return True
+        except Exception as exc:
+            logger.debug("Recovery wake for %s failed: %s", entry.session_key, exc)
+            return False
+
+    def _schedule_recovery_wake(self, entry) -> None:
+        """Spawn the async recovery wake on the loop (this method is sync, called
+        from the resume-pending sweep); the retained task keeps the wake alive
+        across the boot window."""
+        try:
+            task = self._retain_background_task(
+                asyncio.create_task(self._maybe_recovery_wake(entry)))
+            if getattr(self, "_startup_restore_in_progress", False):
+                tasks = getattr(self, "_startup_restore_tasks", None)
+                if tasks is None:
+                    tasks = self._startup_restore_tasks = []
+                tasks.append(task)
+        except Exception as exc:
+            logger.debug("Scheduling recovery wake for %s failed: %s", entry.session_key, exc)
+
+    def _schedule_restart_recovery_wakes(self) -> int:
+        """Wake the sessions the previous gateway recorded as alive when it restarted.
+
+        A restart is the user asking the AI to speak again on boot. ``request_restart``
+        persists ``gateway/restart_recovery_pending.json`` (written_at, session keys) BEFORE
+        its after-turn wait, because ``restart_after_turn_timeout`` (1800s default) normally
+        lets the active turn FINISH — the legacy sessions.json resume_pending marker is then
+        cleared and the canonical admission row settles ``completed``, never ``interrupted``,
+        so neither the legacy sweep nor an admission scan can see that a restart happened.
+        Read the one-shot file, deliver a recovery wake into each recorded session's durable
+        FIFO via ``admit_internal_event`` (the same channel background-process notifications
+        use), then remove the file (natural dedupe: one wake per restart).
+        """
+        path = None
+        try:
+            import json as _json
+            from gateway.run import _auto_continue_freshness_window
+            from hermes_constants import get_hermes_home
+            path = Path(get_hermes_home()) / "gateway" / "restart_recovery_pending.json"
+            if not path.exists():
+                return 0
+            record = _json.loads(path.read_text(encoding="utf-8"))
+            written_at = float(record.get("written_at") or 0.0)
+            if written_at and (time.time() - written_at) > _auto_continue_freshness_window():
+                logger.debug("Restart recovery record stale (%ss old); ignoring", int(time.time() - written_at))
+                return 0
+            keys = [k for k in (record.get("keys") or []) if isinstance(k, str) and k]
+        except Exception as exc:
+            logger.debug("Restart recovery record unreadable: %s", exc)
+            return 0
+        if not keys:
+            return 0
+        # One shot per restart: remove the record so a later boot does not re-wake these sessions.
+        try:
+            if path is not None:
+                path.unlink(missing_ok=True)
+        except Exception:
+            pass
+        for key in keys:
+            self._schedule_recovery_wake_for_key(key)
+        logger.info("Scheduled restart-recovery wake for %d session(s) recorded before restart", len(keys))
+        return len(keys)
+
+    def _schedule_recovery_wake_for_key(self, session_key: str) -> None:
+        """Spawn the async recovery wake on the loop; retained so boot doesn't drop it."""
+        try:
+            task = self._retain_background_task(
+                asyncio.create_task(self._recovery_wake_for_session_key(session_key)))
+            if getattr(self, "_startup_restore_in_progress", False):
+                tasks = getattr(self, "_startup_restore_tasks", None)
+                if tasks is None:
+                    tasks = self._startup_restore_tasks = []
+                tasks.append(task)
+        except Exception as exc:
+            logger.debug("Scheduling recovery wake for %s failed: %s", session_key, exc)
+
+    async def _recovery_wake_for_session_key(self, session_key: str) -> bool:
+        """Deliver a recovery wake into a canonical session's durable FIFO."""
+        try:
+            entry = await self.async_session_store.lookup_by_session_key(session_key)
+            if entry is None:
+                logger.debug("Recovery wake skipped for %s: no session entry", session_key)
+                return False
+            source = self._restored_source(entry)
+            adapter = self._delivery_adapter_for(source)
+            if adapter is None:
+                logger.debug("Recovery wake skipped for %s: adapter not ready", session_key)
+                return False
+            from gateway.wake import admit_internal_event
+            from gateway.platforms.event import MessageEvent, MessageType
+            event = MessageEvent(
+                text="", message_type=MessageType.TEXT, source=source, internal=True,
+                metadata={"notification_category": "recovery"})
+            await admit_internal_event(adapter, event)
+            logger.info("Delivered recovery wake to %s after restart", session_key)
+            return True
+        except Exception as exc:
+            logger.debug("Recovery wake for %s failed: %s", session_key, exc)
+            return False
 
     def _startup_should_abort(self) -> bool:
         return self._restart_requested or self._draining or self._shutdown_event.is_set()
@@ -1557,6 +1692,13 @@ class GatewayStartupMixin:
         await self._finish_startup_restore()
         from gateway.run_runtime import recover_gateway_native_sessions
         await recover_gateway_native_sessions(self)
+        # Canonical (durable-admission) sessions keep their restart state in session_admissions,
+        # not in the legacy resume_pending fields; wake the ones a restart interrupted so the
+        # AI speaks first after a restart (see _schedule_restart_recovery_wakes).
+        try:
+            self._schedule_restart_recovery_wakes()
+        except Exception:
+            logger.debug("restart recovery wake scheduling failed", exc_info=True)
         # Surface state.db init failures to messaging platforms before the user loses data.
         # See #88235.
         await self._send_session_db_warning_notifications()
