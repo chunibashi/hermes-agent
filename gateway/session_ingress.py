@@ -79,7 +79,7 @@ async def admit_message(authority, event):
             del authority.waiters[receipt.admission_id]
         if adopters.get(receipt.admission_id) is event:
             del adopters[receipt.admission_id]
-        return None
+        return None if status == 'terminal' else pause_notice(authority, receipt.ref, 'unknown_execution')
     if accepted is not None and not accepted.done():
         accepted.set_result(None)
     try:
@@ -197,7 +197,18 @@ def pause_notice(authority, ref, reason):
     if reason == 'session_busy':
         # Transient: queued behind work already running on this conversation (a worker execution).
         return '⏳ Your message is saved and will be answered when the work running in this conversation finishes.'
-    return None
+    if reason == 'unknown_execution':
+        # GW-10: the way out is in this chat. /discard acknowledges the lost turn (never replayed)
+        # through the same fenced resolve_unknown as Desktop/TUI, and the saved messages then run.
+        # Slack registers no native /discard (its slash cap): the umbrella `/hermes discard` reaches it.
+        slack = getattr(getattr(live.source, 'platform', None), 'value', None) == 'slack'
+        discard = '/hermes discard' if slack else '/discard'
+        return ('⏸️ This conversation is paused: a previous turn did not finish when Hermes restarted, '
+                f'and only you know whether to send it again. Your message is saved. Send {discard} to drop '
+                'the lost turn and continue (it is not re-run), or /reset to start a fresh conversation.')
+    cause = f'a queued message could not be re-authorized ({reason})'
+    return (f'⏸️ This conversation is paused: {cause}. Your message is saved but will not be answered here. '
+            'Send /reset to start a fresh conversation, or ask the operator to resume this one.')
 
 
 def row_turn_author(policy, row):
