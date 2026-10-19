@@ -821,22 +821,34 @@ class GatewayStartupMixin:
             return False
 
     async def _sweep_startup_unknown_admissions(self) -> None:
-        """Auto-acknowledge every local session's ``unknown`` admission left by a previous gateway
-        that died mid-turn. An interrupted started turn recovers ``unknown`` and pauses the FIFO
-        behind it until someone discards it — the desktop then shows the red "重启期间该轮次已丢失"
-        card and requires a manual discard before the next prompt flows. The restart-recovery wake
-        means we ARE the operator: settle every local session's unknowns so none of them block a
-        chat the user comes back to. Runs on EVERY boot (not only when a restart-recovery record
-        exists), because a wake injected by an earlier boot can itself be interrupted by a second
-        restart within the same update cycle."""
+        """Auto-settle every local session's orphaned admissions and wake the ones a restart
+        actually interrupted, so the AI speaks again on boot without a user ping.
+
+        Two failure shapes land here, and both were seen on live watchdog restarts:
+
+        * ``unknown`` — a previous gateway DIED mid-turn (crash, tree-kill). The orphaned row
+          pauses the FIFO until someone discards it (the desktop red "重启期间该轮次已丢失"
+          card). We settle every one so no chat the user comes back to is blocked.
+        * ``interrupted``/``started`` left by an AI-requested restart that took the watchdog's
+          planned-stop path — that path never writes ``restart_recovery_pending.json`` (only
+          ``request_restart`` does), so the file-only scheduler would stay silent. We wake the
+          FRESH sessions whose most recent turn was cut short.
+
+        Runs on EVERY boot (not only when a restart-recovery record exists), because a wake
+        injected by an earlier boot can itself be interrupted by a second restart. Sessions
+        that lost a turn long ago (stale, no recent activity) are settled but NOT woken —
+        waking them would make the AI speak into chats the user is not in.
+        """
         try:
             from gateway.session_contract import SessionRef
             from gateway.session_authorities import all_authorities
+            from gateway.run import _auto_continue_freshness_window
             from hermes_state_runtime import list_session_admissions
+            freshness = _auto_continue_freshness_window()
             for authority in all_authorities(self):
                 try:
                     rows = authority.db._read_all(
-                        "SELECT id, session_key FROM sessions "
+                        "SELECT id, session_key, last_activity_at FROM sessions "
                         "WHERE source='local' AND ended_at IS NULL") or []
                 except Exception as exc:
                     logger.debug("Unknown-sweep session scan failed for %s: %s", authority.profile_id, exc)
@@ -844,18 +856,27 @@ class GatewayStartupMixin:
                 for row in rows:
                     owner = authority.logical_owner(row["id"])
                     try:
-                        pending = list_session_admissions(authority.db, session_id=owner)
+                        # Full history (not just pending): an AI-requested watchdog restart
+                        # interrupts the turn to ``terminal/interrupted`` which is NOT pending.
+                        all_rows = list_session_admissions(
+                            authority.db, session_id=owner, pending_only=False)
                     except Exception:
                         continue
-                    if not any(r["status"] == "unknown" for r in pending):
+                    if not all_rows:
                         continue
+                    fresh = bool(
+                        freshness <= 0
+                        or (row.get("last_activity_at")
+                            and (time.time() - float(row["last_activity_at"])) <= freshness))
                     ref = SessionRef(authority.profile_id, owner)
-                    for admission in pending:
+                    resolved_any = False
+                    for admission in all_rows:
                         if admission["status"] != "unknown":
                             continue
                         try:
                             await authority.resolve_unknown_as_owner(
                                 ref, admission["admission_id"], admission["generation"])
+                            resolved_any = True
                             logger.info(
                                 "Restart recovery: auto-acknowledged unknown admission %s for %s "
                                 "(previously lost turn no longer blocks the queue)",
@@ -863,6 +884,20 @@ class GatewayStartupMixin:
                         except Exception as exc:
                             logger.info("Restart recovery: auto-resolve of unknown %s failed: %s",
                                         admission["admission_id"], exc)
+                    # Wake when the most recent turn was cut short by a restart: an unresolved
+                    # ``unknown`` (crash) or a settled ``interrupted`` (watchdog planned-stop).
+                    # Stale sessions (activity older than the freshness window) are NOT woken.
+                    if not fresh:
+                        continue
+                    latest = all_rows[-1]
+                    was_cut = latest["status"] in ("unknown", "interrupted") \
+                        or (resolved_any and latest["status"] in ("queued", "started"))
+                    if was_cut:
+                        self._schedule_recovery_wake_for_key(row["session_key"])
+                        logger.info(
+                            "Restart recovery: scheduled wake for interrupted session %s "
+                            "(%s turn cut short by restart)",
+                            row["session_key"], latest["status"])
         except Exception as exc:
             logger.debug("Restart recovery unknown-sweep failed: %s", exc)
 
