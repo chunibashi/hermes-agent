@@ -893,15 +893,36 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
                 if _agent is not None:
                     keys.add(_k)
             # Canonical local sessions run in authority managed turns, NOT _running_agents.
+            # Record only the ones carrying UNFINISHED work (a pending started/queued/unknown
+            # admission): the full authority live map includes every restored historical
+            # session, and waking all of them would flood old chats the user is not in.
             try:
                 from gateway.config import Platform as _EventPlatform
                 from gateway.session_authorities import all_authorities
+                from hermes_state_runtime import list_session_admissions
                 for authority in all_authorities(self):
-                    for sid, live in list(authority.sessions.items()):
-                        src = getattr(live, "source", None)
-                        route = getattr(live, "route", None)
-                        if route and src is not None and getattr(src, "platform", None) == _EventPlatform.LOCAL:
-                            keys.add(route)
+                    try:
+                        rows = authority.db._read_all(
+                            "SELECT session_key FROM sessions "
+                            "WHERE source='local' AND ended_at IS NULL") or []
+                        for row in rows:
+                            key = row["session_key"]
+                            # Recover only sessions that carry UNFINISHED work — a started/queued/
+                            # unknown admission (a live or interrupted turn). A session that was merely
+                            # opened recently but has no pending admission is NOT the conversation the
+                            # restart must resume; waking it would speak into a chat the user isn't in.
+                            try:
+                                entry = self.session_store.lookup_by_session_key(key)
+                                if entry is None:
+                                    continue
+                                owner = authority.logical_owner(entry.session_id)
+                                pending = list_session_admissions(authority.db, session_id=owner)
+                                if any(r["status"] in ("started", "queued", "unknown") for r in pending):
+                                    keys.add(key)
+                            except Exception:
+                                continue
+                    except Exception as exc:
+                        logger.debug("Recovery-scope DB scan failed for %s: %s", authority.profile_id, exc)
             except Exception as exc:
                 logger.debug("Recovery-scope authority scan failed: %s", exc)
             if not keys:

@@ -36,6 +36,17 @@ from typing import Any, Dict, Optional, Tuple
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.run")
 
+# Instruction injected as the restart-recovery wake: the gateway restarted (possibly because a
+# planned update or lifecycle event took it down mid-turn), and the AI must resume the interrupted
+# conversation by itself instead of waiting for the user to prompt it again. This is a synthetic
+# wake, not a user message, so it says exactly what to do.
+_RESTART_RECOVERY_PROMPT = (
+    "[系统恢复] 网关刚刚完成了一次重启（可能是计划内更新或守护进程拉起）。"
+    "重启之前这个会话正在工作，现在由你自动接续：\n"
+    "1. 回顾会话最近的消息，确认上一轮对话/任务进行到哪里；\n"
+    "2. 如果上一轮工作被打断且尚未完成，继续完成它。"
+)
+
 
 def recover_left_core_in(home: Path, *, hydrate_secrets: bool = True) -> None:
     """Install the catalog plugin of every feature that left core (Home Assistant) *home* uses, in
@@ -686,8 +697,7 @@ class GatewayStartupMixin:
             from gateway.wake import admit_internal_event
             from gateway.platforms.event import MessageEvent, MessageType
             event = MessageEvent(
-                text="", message_type=MessageType.TEXT, source=source, internal=True,
-                metadata={"notification_category": "recovery"})
+                text=_RESTART_RECOVERY_PROMPT, message_type=MessageType.TEXT, source=source, internal=True)
             await admit_internal_event(adapter, event)
             logger.info("Delivered recovery wake to %s after clean restart", entry.session_key)
             return True
@@ -767,28 +777,94 @@ class GatewayStartupMixin:
             logger.debug("Scheduling recovery wake for %s failed: %s", session_key, exc)
 
     async def _recovery_wake_for_session_key(self, session_key: str) -> bool:
-        """Deliver a recovery wake into a canonical session's durable FIFO."""
+        """Deliver a recovery wake into a canonical session's durable FIFO.
+
+        Local desktop sessions run in the authority (NOT ``_running_agents``) and are
+        NOT push-capable adapters — ``admit_internal_event`` on the delivery adapter
+        silently never accepts them. The canonical route for a LOCAL wake is
+        ``admit_route_wake``, which checks the live route matches and commits the wake
+        into the authority's durable FIFO via ``authority.admit_automation``.
+        """
         try:
-            entry = await self.async_session_store.lookup_by_session_key(session_key)
+            from gateway.session_automation import admit_route_wake
+            from gateway.session_authorities import active_authority
+            authority = active_authority(self)
+            if authority is None:
+                logger.debug("Recovery wake skipped for %s: no active authority", session_key)
+                return False
+            entry = self.session_store.lookup_by_session_key(session_key)
             if entry is None:
                 logger.debug("Recovery wake skipped for %s: no session entry", session_key)
                 return False
             source = self._restored_source(entry)
+            if source is None:
+                logger.debug("Recovery wake skipped for %s: no restored source", session_key)
+                return False
             adapter = self._delivery_adapter_for(source)
             if adapter is None:
                 logger.debug("Recovery wake skipped for %s: adapter not ready", session_key)
                 return False
-            from gateway.wake import admit_internal_event
-            from gateway.platforms.event import MessageEvent, MessageType
-            event = MessageEvent(
-                text="", message_type=MessageType.TEXT, source=source, internal=True,
-                metadata={"notification_category": "recovery"})
-            await admit_internal_event(adapter, event)
-            logger.info("Delivered recovery wake to %s after restart", session_key)
-            return True
+            ok = await admit_route_wake(
+                self, adapter, source, _RESTART_RECOVERY_PROMPT,
+                "restart-recovery")
+            if ok:
+                logger.info("Delivered recovery wake to %s after restart", session_key)
+            else:
+                logger.info(
+                    "Recovery wake REFUSED for %s: admit_route_wake did not commit "
+                    "(live route mismatch / no committed turn / paused)",
+                    session_key)
+            return bool(ok)
         except Exception as exc:
-            logger.debug("Recovery wake for %s failed: %s", session_key, exc)
+            import traceback
+            logger.info("Recovery wake for %s raised: %s\n%s", session_key, exc, traceback.format_exc())
             return False
+
+    async def _sweep_startup_unknown_admissions(self) -> None:
+        """Auto-acknowledge every local session's ``unknown`` admission left by a previous gateway
+        that died mid-turn. An interrupted started turn recovers ``unknown`` and pauses the FIFO
+        behind it until someone discards it — the desktop then shows the red "重启期间该轮次已丢失"
+        card and requires a manual discard before the next prompt flows. The restart-recovery wake
+        means we ARE the operator: settle every local session's unknowns so none of them block a
+        chat the user comes back to. Runs on EVERY boot (not only when a restart-recovery record
+        exists), because a wake injected by an earlier boot can itself be interrupted by a second
+        restart within the same update cycle."""
+        try:
+            from gateway.session_contract import SessionRef
+            from gateway.session_authorities import all_authorities
+            from hermes_state_runtime import list_session_admissions
+            for authority in all_authorities(self):
+                try:
+                    rows = authority.db._read_all(
+                        "SELECT id, session_key FROM sessions "
+                        "WHERE source='local' AND ended_at IS NULL") or []
+                except Exception as exc:
+                    logger.debug("Unknown-sweep session scan failed for %s: %s", authority.profile_id, exc)
+                    continue
+                for row in rows:
+                    owner = authority.logical_owner(row["id"])
+                    try:
+                        pending = list_session_admissions(authority.db, session_id=owner)
+                    except Exception:
+                        continue
+                    if not any(r["status"] == "unknown" for r in pending):
+                        continue
+                    ref = SessionRef(authority.profile_id, owner)
+                    for admission in pending:
+                        if admission["status"] != "unknown":
+                            continue
+                        try:
+                            await authority.resolve_unknown_as_owner(
+                                ref, admission["admission_id"], admission["generation"])
+                            logger.info(
+                                "Restart recovery: auto-acknowledged unknown admission %s for %s "
+                                "(previously lost turn no longer blocks the queue)",
+                                admission["admission_id"], row["session_key"])
+                        except Exception as exc:
+                            logger.info("Restart recovery: auto-resolve of unknown %s failed: %s",
+                                        admission["admission_id"], exc)
+        except Exception as exc:
+            logger.debug("Restart recovery unknown-sweep failed: %s", exc)
 
     def _startup_should_abort(self) -> bool:
         return self._restart_requested or self._draining or self._shutdown_event.is_set()
@@ -1698,6 +1774,7 @@ class GatewayStartupMixin:
         # not in the legacy resume_pending fields; wake the ones a restart interrupted so the
         # AI speaks first after a restart (see _schedule_restart_recovery_wakes).
         try:
+            await self._sweep_startup_unknown_admissions()
             self._schedule_restart_recovery_wakes()
         except Exception:
             logger.debug("restart recovery wake scheduling failed", exc_info=True)
