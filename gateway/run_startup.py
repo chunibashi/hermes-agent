@@ -866,7 +866,7 @@ class GatewayStartupMixin:
                         continue
                     fresh = bool(
                         freshness <= 0
-                        or (row.get("last_activity_at")
+                        or (row["last_activity_at"]
                             and (time.time() - float(row["last_activity_at"])) <= freshness))
                     ref = SessionRef(authority.profile_id, owner)
                     for admission in all_rows:
