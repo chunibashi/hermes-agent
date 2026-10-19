@@ -847,9 +847,12 @@ class GatewayStartupMixin:
             freshness = _auto_continue_freshness_window()
             for authority in all_authorities(self):
                 try:
+                    # All sources, not just local: a restart can cut a telegram/discord turn
+                    # too (seen live: an update killed the gateway mid telegram delivery —
+                    # the ♻️ Recovered-reply card with no AI wake on the other end).
                     rows = authority.db._read_all(
                         "SELECT id, session_key, last_activity_at FROM sessions "
-                        "WHERE source='local' AND ended_at IS NULL") or []
+                        "WHERE ended_at IS NULL") or []
                 except Exception as exc:
                     logger.debug("Unknown-sweep session scan failed for %s: %s", authority.profile_id, exc)
                     continue
