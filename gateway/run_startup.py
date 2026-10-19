@@ -869,14 +869,12 @@ class GatewayStartupMixin:
                         or (row.get("last_activity_at")
                             and (time.time() - float(row["last_activity_at"])) <= freshness))
                     ref = SessionRef(authority.profile_id, owner)
-                    resolved_any = False
                     for admission in all_rows:
                         if admission["status"] != "unknown":
                             continue
                         try:
                             await authority.resolve_unknown_as_owner(
                                 ref, admission["admission_id"], admission["generation"])
-                            resolved_any = True
                             logger.info(
                                 "Restart recovery: auto-acknowledged unknown admission %s for %s "
                                 "(previously lost turn no longer blocks the queue)",
@@ -884,20 +882,28 @@ class GatewayStartupMixin:
                         except Exception as exc:
                             logger.info("Restart recovery: auto-resolve of unknown %s failed: %s",
                                         admission["admission_id"], exc)
-                    # Wake when the most recent turn was cut short by a restart: an unresolved
-                    # ``unknown`` (crash) or a settled ``interrupted`` (watchdog planned-stop).
-                    # Stale sessions (activity older than the freshness window) are NOT woken.
+                    # Wake when a turn was cut short by a restart and nobody continued after it:
+                    # the most recent ``unknown`` (crash) or ``interrupted`` (watchdog
+                    # planned-stop) with no ``completed`` turn after it. A completed turn after
+                    # the cut means the user already continued the conversation — no wake.
                     if not fresh:
                         continue
-                    latest = all_rows[-1]
-                    was_cut = latest["status"] in ("unknown", "interrupted") \
-                        or (resolved_any and latest["status"] in ("queued", "started"))
-                    if was_cut:
-                        self._schedule_recovery_wake_for_key(row["session_key"])
-                        logger.info(
-                            "Restart recovery: scheduled wake for interrupted session %s "
-                            "(%s turn cut short by restart)",
-                            row["session_key"], latest["status"])
+                    cut_idx = None
+                    for i, r in enumerate(all_rows):
+                        if r["status"] in ("unknown", "interrupted"):
+                            cut_idx = i
+                    if cut_idx is None:
+                        continue
+                    has_completed_after = any(
+                        r["status"] == "terminal" and r["outcome"] == "completed"
+                        for r in all_rows[cut_idx + 1:])
+                    if has_completed_after:
+                        continue
+                    self._schedule_recovery_wake_for_key(row["session_key"])
+                    logger.info(
+                        "Restart recovery: scheduled wake for interrupted session %s "
+                        "(%s turn cut short by restart)",
+                        row["session_key"], all_rows[cut_idx]["status"])
         except Exception as exc:
             logger.debug("Restart recovery unknown-sweep failed: %s", exc)
 
