@@ -890,7 +890,11 @@ class GatewayStartupMixin:
                         continue
                     cut_idx = None
                     for i, r in enumerate(all_rows):
-                        if r["status"] in ("unknown", "interrupted"):
+                        # A cut turn is either ``unknown`` (crash, never settled) or
+                        # ``terminal``/``interrupted`` (settled but interrupted by the restart
+                        # — what an unclean exit leaves in session_admissions).
+                        if r["status"] == "unknown" or (
+                                r["status"] == "terminal" and r["outcome"] == "interrupted"):
                             cut_idx = i
                     if cut_idx is None:
                         continue
@@ -1005,7 +1009,98 @@ class GatewayStartupMixin:
             ledgered = await self._ledger_crash_left_replies(max_age)
         with _log_suppressed(logging.WARNING, "Exact active-turn recovery on startup failed: %s"):
             resumed = await self.async_session_store.recover_interrupted_turns(max_age_seconds=max_age)
+        with _log_suppressed(logging.WARNING, "Canonical crash-turn recovery on startup failed: %s"):
+            # ``recover_interrupted_turns`` only promotes LEGACY sessions.json ``active_turn_token``
+            # markers. A canonical (durable-admission) messaging session keeps its restart state in
+            # ``session_admissions`` (status ``interrupted``), so an unclean death — no planned-stop
+            # marker, no restart-recovery file — left the replacement gateway silent: the AI never
+            # spoke again until the user manually resent. Promote those now; the standard
+            # resume-pending sweep then delivers a recovery wake via ``admit_internal_event``
+            # (the same channel the 08:18 telegram wake used successfully).
+            resumed += await self._promote_canonical_crash_turns(max_age_seconds=max_age)
         return resumed, ledgered
+
+    async def _promote_canonical_crash_turns(self, max_age_seconds: int) -> int:
+        """Promote canonical (durable-admission) crash-interrupted sessions to ``resume_pending``.
+
+        The legacy ``recover_interrupted_turns`` only sees ``active_turn_token`` markers on
+        sessions.json entries. A canonical messaging session (telegram/discord/...) keeps its
+        restart state in ``session_admissions`` — an unclean death (SIGKILL, VM death) leaves
+        its most recent turn ``interrupted`` there with no planned-stop marker, no
+        restart-recovery file, and no legacy token, so the standard boot sweep reported
+        "0 to resume" and the AI never spoke again after the replacement gateway took over.
+        Promote those sessions here so ``_schedule_resume_pending_sessions`` delivers a
+        recovery wake through the existing channel (``_maybe_recovery_wake`` →
+        ``admit_internal_event``), the same path that already woke telegram on clean restarts.
+
+        Only FRESH cut turns are promoted (no completed turn after the cut), and only sessions
+        with a messaging origin — local sessions are covered by the authority wake path.
+        Returns the number promoted.
+        """
+        from gateway.config import Platform as _EventPlatform
+        from gateway.session_authorities import all_authorities
+        from hermes_state_runtime import list_session_admissions
+        promoted = 0
+        cutoff = time.time() - max_age_seconds
+        for authority in all_authorities(self):
+            try:
+                rows = authority.db._read_all(
+                    "SELECT id, session_key, last_activity_at FROM sessions "
+                    "WHERE ended_at IS NULL") or []
+            except Exception as exc:
+                logger.debug("Canonical-promote session scan failed for %s: %s", authority.profile_id, exc)
+                continue
+            for row in rows:
+                owner = authority.logical_owner(row["id"])
+                try:
+                    entry = self.session_store.lookup_by_session_key(row["session_key"])
+                except Exception:
+                    continue
+                if entry is None or entry.suspended or entry.resume_pending:
+                    continue
+                origin = getattr(entry, "origin", None)
+                # Only messaging (non-local) sessions: local routes get the authority wake.
+                if origin is None or getattr(origin, "platform", None) == _EventPlatform.LOCAL:
+                    continue
+                try:
+                    all_rows = list_session_admissions(
+                        authority.db, session_id=owner, pending_only=False)
+                except Exception:
+                    continue
+                if not all_rows:
+                    continue
+                # Most recent cut (unknown/interrupted) with no completed turn after it.
+                cut_idx = None
+                for i, r in enumerate(all_rows):
+                    # A cut turn is either ``unknown`` (crash, never settled) or
+                    # ``terminal``/``interrupted`` (settled but interrupted by the restart
+                    # — what an unclean exit leaves in session_admissions).
+                    if r["status"] == "unknown" or (
+                            r["status"] == "terminal" and r["outcome"] == "interrupted"):
+                        cut_idx = i
+                if cut_idx is None:
+                    continue
+                has_completed_after = any(
+                    r["status"] == "terminal" and r["outcome"] == "completed"
+                    for r in all_rows[cut_idx + 1:])
+                if has_completed_after:
+                    continue
+                # Fresh within the crash-recovery window; stale cuts are left alone.
+                la = row["last_activity_at"] or 0
+                if not la or float(la) < cutoff:
+                    continue
+                try:
+                    await self.async_session_store.mark_resume_pending(
+                        row["session_key"], reason="restart_interrupted")
+                    promoted += 1
+                    logger.info(
+                        "Restart recovery: promoted %s to resume_pending "
+                        "(canonical %s turn cut short by unclean exit)",
+                        row["session_key"], all_rows[cut_idx]["status"])
+                except Exception as exc:
+                    logger.info("Restart recovery: promote %s failed: %s",
+                                row["session_key"], exc)
+        return promoted
 
     async def _ledger_crash_left_replies(self, max_age_seconds: int) -> int:
         """Settle every marked turn whose final reply was persisted and clear its marker, so
