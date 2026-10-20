@@ -81,9 +81,16 @@ def start_code_skew_watchdog(server, *, skew_fn: Optional[Callable[[], Skew]] = 
     """Daemon thread that sets ``server.should_exit`` once the loaded code is provably stale and
     the backend is provably idle. ``max_polls`` bounds the loop for tests only."""
     if skew_fn is None:
-        from gateway.code_skew import detect_code_skew
+        # LOCAL fold: retirement must not fire on frontend/packaging/docs/test-only commits.
+        # The desktop-owned serve backend retires itself when this watchdog reports drift, and on
+        # a dev checkout that agent sessions commit to, ANY commit used to read as drift — so the
+        # backend retired every ~30s and dropped the desktop's live WebSocket
+        # ("request timed out after 30s: session.control.read"). detect_runtime_skew folds
+        # detect_code_skew() to drifts whose diff touches worker-imported files; a restart cannot
+        # load new TS anyway, so a frontend-only move must keep the backend up.
+        from gateway.code_skew import detect_runtime_skew
 
-        skew_fn = detect_code_skew
+        skew_fn = detect_runtime_skew
     read_skew: Callable[[], Skew] = skew_fn
 
     def _observe() -> Optional[str]:

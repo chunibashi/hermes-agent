@@ -73,7 +73,13 @@ def test_never_retires_while_an_update_is_in_flight():
 
 def test_default_probe_retires_once_the_checkout_moves_past_the_boot_revision(tmp_path, monkeypatch):
     """The real wiring: the watchdog reads the boot revision the serve lifespan records
-    (``gateway.code_skew``) against a checkout whose HEAD then moves."""
+    (``gateway.code_skew``) against a checkout whose HEAD then moves.
+
+    LOCAL fold: only drifts whose diff touches worker-imported files (Python + manifests)
+    retire the backend. A frontend-only commit (apps/, ui-tui/, ...) or an empty commit must
+    NOT retire it — on a dev checkout that agent sessions commit to, any-commit retirement
+    dropped the desktop's live WebSocket every ~30s.
+    """
     from gateway import code_skew
 
     repo = tmp_path / "repo"
@@ -90,7 +96,28 @@ def test_default_probe_retires_once_the_checkout_moves_past_the_boot_revision(tm
                              poll_s=0.01, max_polls=4).join(timeout=5)
     assert unchanged.should_exit is False
 
+    # An empty commit (no files at all) must NOT retire the backend.
     subprocess.run([*git, "commit", "-q", "--allow-empty", "-m", "two"], check=True)
+    empty_move = _Server()
+    start_code_skew_watchdog(empty_move, update_probe=lambda: False, fence=fence,
+                             poll_s=0.01, max_polls=4).join(timeout=5)
+    assert empty_move.should_exit is False
+
+    # A frontend-only (TS) commit must NOT retire the backend: a restart cannot load new TS.
+    (repo / "apps").mkdir(parents=True)
+    (repo / "apps" / "ui.ts").write_text("export const x = 1;\n", encoding="utf-8")
+    subprocess.run([*git, "add", "-A"], check=True)
+    subprocess.run([*git, "commit", "-q", "-m", "frontend-only"], check=True)
+    frontend_move = _Server()
+    start_code_skew_watchdog(frontend_move, update_probe=lambda: False, fence=fence,
+                             poll_s=0.01, max_polls=4).join(timeout=5)
+    assert frontend_move.should_exit is False
+
+    # A Python runtime commit DOES retire the backend.
+    (repo / "gateway").mkdir(parents=True)
+    (repo / "gateway" / "code_skew.py").write_text("x = 1\n", encoding="utf-8")
+    subprocess.run([*git, "add", "-A"], check=True)
+    subprocess.run([*git, "commit", "-q", "-m", "python runtime"], check=True)
     moved = _Server()
     start_code_skew_watchdog(moved, update_probe=lambda: False, fence=fence,
                              poll_s=0.01, max_polls=4).join(timeout=5)

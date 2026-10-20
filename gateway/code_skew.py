@@ -55,3 +55,73 @@ def detect_code_skew() -> tuple[str, str] | None:
     if current is None or current == _boot_fingerprint:
         return None
     return _short(_boot_fingerprint), _short(current)
+
+
+# Files whose change means a RUNNING backend must restart to see them (local fold, mirrored by
+# ``hermes_cli/gateway_runtime_cli.py::_runtime_files_changed`` — keep the two in sync). A commit
+# that only touches frontend/packaging/docs/tests moves HEAD without changing any runtime
+# behaviour, and a restart cannot load new TS anyway: it must not retire a live backend. Python
+# sources outside the frontend/tooling trees and the dependency manifests are the runtime surface.
+_RUNTIME_SUFFIX = (".py",)
+_RUNTIME_MANIFESTS = ("pyproject.toml", "uv.lock", "requirements.txt", "setup.py", "setup.cfg")
+_RUNTIME_EXCLUDE_PREFIXES = (
+    "apps/", "ui-tui/", "web/", "website/", "docs/", "scripts/", "tests/", "plugin-catalog/",
+    "assets/", "skills/", "optional-skills/", "examples/", ".github/",
+)
+
+
+def runtime_files_changed(repo_dir, old_sha: str, new_sha: str) -> bool:
+    """True when the ``old_sha..new_sha`` rev range touches files a running backend imports.
+
+    ``repo_dir`` is the checkout root; None (non-git install) means the caller treats the
+    drift as unknown and keeps the backend running (never a false retirement).
+    """
+    if repo_dir is None:
+        return False
+    import subprocess
+
+    try:
+        out = subprocess.run(
+            ["git", "-C", str(repo_dir), "diff", "--name-only", "--no-renames", f"{old_sha}..{new_sha}"],
+            capture_output=True, text=True, timeout=15, check=False)
+    except Exception:
+        return False
+    if out.returncode != 0:
+        return False
+    for line in out.stdout.splitlines():
+        name = line.strip().replace("\\", "/")
+        if not name:
+            continue
+        if name in _RUNTIME_MANIFESTS:
+            return True
+        if name.endswith(_RUNTIME_SUFFIX) and not name.startswith(_RUNTIME_EXCLUDE_PREFIXES):
+            return True
+    return False
+
+
+def detect_runtime_skew() -> tuple[str, str] | None:
+    """``detect_code_skew()`` folded to runtime-only drift (local: serve retirement watchdog).
+
+    The desktop-owned serve backend retires itself when this reports drift, so a commit that
+    only moves frontend files must read as "no skew" — otherwise every agent commit kills the
+    live WebSocket ("request timed out after 30s: session.control.read"). Only drifts whose
+    diff touches worker-imported files (Python + manifests) justify a retirement.
+    """
+    drift = detect_code_skew()
+    if drift is None:
+        return None
+    boot_full = _fingerprint_sha(_boot_fingerprint)
+    disk_full = _fingerprint_sha(_fingerprint())
+    if not (boot_full and disk_full and boot_full != disk_full):
+        return None
+    if not runtime_files_changed(_PROJECT_ROOT, boot_full, disk_full):
+        return None
+    return drift
+
+
+def _fingerprint_sha(fingerprint: str | None) -> str | None:
+    """The full sha segment of a ``git:<ref>:<sha>`` fingerprint, or None when unresolved."""
+    if not fingerprint:
+        return None
+    sha = fingerprint.rsplit(":", 1)[-1]
+    return sha if sha and sha != "unresolved" else None
