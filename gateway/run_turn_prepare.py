@@ -462,10 +462,26 @@ class GatewayTurnPrepareMixin:
         turn_sidecar_notes.append(context_note)
 
         try:
-            should_notify = reset_reason == "suspended"
+            from gateway.run import _auto_reset_reason_text
+            policy = self.session_store.config.get_reset_policy(
+                platform=source.platform, session_type=getattr(source, 'chat_type', 'dm'),
+            )
+            platform_name = source.platform.value if source.platform else ""
+            # suspended / restart-recovery-expired sessions always notify (the user must learn they
+            # can /resume); idle/daily resets respect policy.notify + excluded platforms + activity.
+            should_notify = reset_reason in {"suspended", "resume_pending_expired"} or (
+                policy.notify
+                and getattr(session_entry, 'reset_had_activity', False)
+                and platform_name not in policy.notify_exclude_platforms
+            )
             adapter = self._delivery_adapter_for(source) if should_notify else None
             if adapter:
-                notice = t("gateway.session.auto_reset_notice")
+                notice = (
+                    f"◐ Session automatically reset ({_auto_reset_reason_text(reset_reason, policy)}). "
+                    f"Conversation history cleared.\n"
+                    f"Use /resume to browse and restore a previous session.\n"
+                    f"Adjust reset timing in config.yaml under session_reset."
+                )
                 with suppress(Exception):
                     session_info = await asyncio.to_thread(self._reset_notice_session_info, source)
                     if session_info:

@@ -100,7 +100,12 @@ _WS_DISPATCH_QUEUE_MAX = 256
 # transcript, so running them through the serial control lane turns an inexpensive interrupt or
 # control read behind them into a client timeout.  Keep the exception deliberately narrow: mutating
 # RPCs still retain arrival order, and no more than two expensive reads consume a connection.
-_WS_CONCURRENT_READ_METHODS = frozenset({"session.context_breakdown"})
+# ``session.resume`` projects a session's history + snapshot and awaits a busy to_thread pool on the
+# way (prepare_history / refresh_resumed_policy / cancel_persisted_close): behind it, gateway.ping
+# and model.options read as dead to a client whose resume reply is slow, producing the recurring
+# "30s session.resume" desktop timeouts.  It is a read projection like context_breakdown, so it
+# belongs here.
+_WS_CONCURRENT_READ_METHODS = frozenset({"session.context_breakdown", "session.resume"})
 _WS_CONCURRENT_READ_LIMIT = 2
 # Reads admitted beyond the running ones; one more parks the reader (as the serial lane did).
 _WS_WAITING_READ_LIMIT = 8

@@ -11684,9 +11684,17 @@ const GATEWAY_RESTART_CLIENT_TIMEOUT_MS = 120_000
 // `gateway ensure` resolver, spawn helper and quoting, against the profile owning the process, with
 // `--detach` (runGatewayOwnerRestart). A non-zero exit is logged, not thrown: the re-ensure reports
 // what answers.
+//
+// Both callers restart ON PURPOSE: a code-skew gateway (outlived `hermes update`) that must load
+// the new checkout, and the Models-page "Restart Hermes" button. Without `--yes` a live session
+// makes `hermes gateway restart` refuse with exit 1 (`interrupts N live session(s)`), so the
+// code-skew path never replaces the stale gateway and every attach hits a fresh 503 — the same
+// loop this restart exists to break. The gateway still drains in-flight turns before exiting;
+// only the refusal is bypassed. (`--detach` alone does not skip the live-session guard —
+// `refuse_while_sessions_live` only honours `--yes`/`--interrupt`.)
 async function restartLocalGatewayOwner(ownerProfile: string): Promise<void> {
   const result = await runGatewayOwnerRestart(async args => {
-    const backend = await ensureRuntime(await resolveHermesBackend(args), () => undefined)
+    const backend = await ensureRuntime(await resolveHermesBackend([...args, '--yes']), () => undefined)
 
     return runGatewayEnsure(
       { ...backend, env: desktopBackendSpawnEnv(backend.env || {}) },
