@@ -491,6 +491,36 @@ async def test_unclean_restart_delivers_a_persisted_unledgered_reply_instead_of_
     _close_store_db(store)
 
 
+@pytest.mark.asyncio
+async def test_unclean_restart_never_ledgers_a_failed_turn_boundary_as_a_reply(tmp_path):
+    """A settle-written failed-turn boundary (``AUTOMATION_INTERRUPTED_NOTICE``) is a system
+    transcript marker, not an AI reply: ledgering it would make the boot sweep clear
+    ``resume_pending`` for the same session_key and the recovery wake would never fire
+    (2026-10-21/22 telegram silence behind the ♻️ redelivery card). The marked turn must
+    instead resume."""
+    from agent.turn_failure_copy import AUTOMATION_INTERRUPTED_NOTICE, FAILED_TURN_DISPLAY_KIND
+    from gateway.delivery_ledger import sweep_recoverable
+
+    runner, store = _db_runner(tmp_path)
+    source = _make_source("automation-cut")
+    entry = store.get_or_create_session(source)
+    store.mark_turn_active(entry.session_key)
+    store.append_to_transcript(
+        entry.session_id,
+        {"role": "user", "content": "[IMPORTANT: Background process proc_x completed normally (exit code 0)]",
+         "display_kind": "internal_notification"})
+    store.append_to_transcript(
+        entry.session_id,
+        {"role": "assistant", "content": AUTOMATION_INTERRUPTED_NOTICE, "display_kind": FAILED_TURN_DISPLAY_KIND})
+
+    assert await runner._recover_unclean_sessions() == (1, 0)
+
+    resumed = _entry_for(store, source)
+    assert (resumed.resume_pending, resumed.resume_reason) == (True, "restart_interrupted")
+    assert sweep_recoverable(deliverable_platforms={"discord"}) == []
+    _close_store_db(store)
+
+
 _WAKE = {"display_kind": "internal_notification"}
 
 

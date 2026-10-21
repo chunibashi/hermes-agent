@@ -1150,11 +1150,19 @@ class GatewayStartupMixin:
         from gateway.run import _sanitize_gateway_final_response
         from gateway.run_turn import _unexpected_silence_reply
         from gateway.warning_notifications import diagnostic_turn_muted
+        from agent.turn_failure_copy import FAILED_TURN_DISPLAY_KIND
         from hermes_cli.timefmt import coerce_epoch
         visible = [m for m in history if m.get("role") not in ("session_meta", "system")]
         last = visible[-1] if visible else {}
         if (last.get("role") != "assistant" or last.get("tool_calls") or not isinstance(last.get("content"), str)
                 or (coerce_epoch(last.get("timestamp")) or 0) < started):
+            return None
+        if last.get("display_kind") == FAILED_TURN_DISPLAY_KIND:
+            # A failed-turn boundary (``AUTOMATION_INTERRUPTED_NOTICE`` written by
+            # ``settle_recovered_unattended``, the partial-failure notice, ...) is a system
+            # transcript marker, not an AI reply: ledgering it as a crash-left reply makes the
+            # boot sweep clear ``resume_pending`` for the same session_key, and the recovery
+            # wake never fires (2026-10-21/22 telegram silence behind the ♻️ redelivery card).
             return None
         prompt = next((m for m in reversed(visible) if m.get("role") == "user"), {})
         if is_machinery_display_kind(prompt.get("display_kind")):
