@@ -9,6 +9,42 @@ API_BINDING_PREFIX = 'gateway.api.binding.v1.'
 API_DECLARED_PREFIX = 'gateway.api.conversation.v1.'
 
 
+def routing_scope_for(db) -> str:
+    """The namespace this store's routing index actually lives in.
+
+    ``SessionStore`` persists and loads ``gateway_routing`` rows under ``_routing_scope()`` (the
+    resolved sessions_dir). Reading/writing the legacy ``scope=''`` namespace here instead makes
+    the conflict check consult rows the live store never reads — a stale empty-scope row for the
+    same route then refuses EVERY future create with ``admission_conflict``, forever, because the
+    modern writers only ever replace their own scope."""
+    scope = getattr(db, "routing_scope", None)
+    if scope:
+        return str(scope)
+    try:
+        from pathlib import Path
+        return str((Path(db.db_path).parent / "sessions").resolve())
+    except Exception:
+        pass
+    try:
+        from hermes_constants import get_hermes_home
+        return str((get_hermes_home() / "sessions").resolve())
+    except Exception:
+        return ""
+
+
+def routing_scope_for_conn(conn) -> str:
+    """Same namespace, resolved from a bare connection (no ``db`` handle in scope): the scope the
+    live index already uses. Empty when nothing has been written yet, which is also when the
+    legacy namespace is empty and the check cannot misfire."""
+    try:
+        row = conn.execute("SELECT scope FROM gateway_routing WHERE scope != '' LIMIT 1").fetchone()
+        if row is not None:
+            return row[0]
+    except Exception:
+        pass
+    return ""
+
+
 def commit_local_session(db, *, epoch, receipt):
     """Reserve the row, route and immutable policy together, before publication. A staged receipt's
     ``on_create`` (owner memory, never stored) is published by the transaction that creates the row
@@ -26,6 +62,7 @@ def commit_local_session(db, *, epoch, receipt):
     receipt = json.loads(encoded)
     sid, route = receipt['session_id'], receipt['route']
     key = POLICY_PREFIX + sid
+    scope = routing_scope_for(db)
     def write(conn):
         _epoch(conn, epoch)
         old = conn.execute('SELECT value FROM state_meta WHERE key=?', (key,)).fetchone()
@@ -48,8 +85,23 @@ def commit_local_session(db, *, epoch, receipt):
         if ('legacy_session_id' not in receipt and
                 conn.execute('SELECT 1 FROM sessions WHERE id=?', (sid,)).fetchone()):
             raise RuntimeStoreError('storage_unavailable')
-        if conn.execute("SELECT 1 FROM gateway_routing WHERE scope='' AND session_key=?", (route,)).fetchone():
-            raise RuntimeStoreError('admission_conflict')
+        existing = conn.execute("SELECT entry_json FROM gateway_routing WHERE scope=? AND session_key=?",
+                                (scope, route)).fetchone()
+        if existing is not None:
+            try:
+                routed = json.loads(existing[0]).get('session_id')
+            except (ValueError, TypeError):
+                routed = None
+            if routed != sid:
+                # The route is held by a DIFFERENT session. That is only a conflict while the
+                # holder is still live: a predecessor the reset policy already ended (daily/idle
+                # rotation) is exactly the session this create is replacing. Refusing it strands
+                # the route on a dead row, the conversation then reads as a brand-new empty chat,
+                # and this receipt is never written — so restoring that session answers not_found.
+                holder_live = conn.execute(
+                    'SELECT 1 FROM sessions WHERE id=? AND ended_at IS NULL', (routed,)).fetchone()
+                if holder_live:
+                    raise RuntimeStoreError('admission_conflict')
         if 'legacy_session_id' in receipt:
             from hermes_state_local_migration import bind_legacy_target
             bind_legacy_target(db, conn, receipt)
@@ -70,8 +122,8 @@ def commit_local_session(db, *, epoch, receipt):
             (sid, policy['source'], created, receipt['principal_id'], route,
              entry['origin']['chat_id'], policy['model'], _row_cwd(policy), db._own_profile_name(),
              _json(entry['origin']), started))
-        conn.execute("INSERT INTO gateway_routing(scope,session_key,entry_json,updated_at) VALUES('',?,?,?)",
-                     (route, _json(entry), started))
+        conn.execute("INSERT INTO gateway_routing(scope,session_key,entry_json,updated_at) VALUES(?,?,?,?)",
+                     (scope, route, _json(entry), started))
         conn.execute('INSERT INTO state_meta(key,value) VALUES(?,?)', (key, encoded))
         if on_create is not None:
             on_create.publish()  # before the row is visible, so no reader lazy-loads around it

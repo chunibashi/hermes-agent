@@ -54,15 +54,16 @@ def local_physical_target(conn, session_id):
 
 def _routed_entry(conn, route, tip):
     """*route*'s routing entry while it still targets *tip*, else None."""
-    row = conn.execute("SELECT entry_json FROM gateway_routing WHERE scope='' AND session_key=?", (route,)).fetchone()
+    row = conn.execute("SELECT entry_json FROM gateway_routing WHERE scope=? AND session_key=?",
+                       (routing_scope_for_conn(conn), route)).fetchone()
     routed = json.loads(row[0]) if row else None
     return routed if routed is not None and routed['session_id'] == tip else None
 
 
 def _commit_local_target(conn, receipt, routed):
     """Store *receipt* and its route's entry *routed* and bump the logical revision, in one transaction."""
-    conn.execute("UPDATE gateway_routing SET entry_json=? WHERE scope='' AND session_key=?",
-                 (_json(routed), receipt['route']))
+    conn.execute("UPDATE gateway_routing SET entry_json=? WHERE scope=? AND session_key=?",
+                 (_json(routed), routing_scope_for_conn(conn), receipt['route']))
     conn.execute('UPDATE state_meta SET value=? WHERE key=?', (_json(receipt), POLICY_PREFIX + receipt['session_id']))
     conn.execute('UPDATE sessions SET runtime_revision=runtime_revision+1 WHERE id=?', (receipt['session_id'],))
 
