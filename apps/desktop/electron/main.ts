@@ -88,7 +88,7 @@ import {
   createBackendShutdownCoordinator
 } from './backend-ownership'
 import { canImportHermesCli, PROBE_TIMEOUT_MS, shouldTrustHermesOverride, verifyHermesCli } from './backend-probes'
-import { recycleOwnedBackend } from './backend-recycle'
+import { createCodeSkewAutoRestart, isCodeSkewRestartRequiredError, recycleOwnedBackend } from './backend-recycle'
 import { isPidAliveWindows, waitForBackendRelease } from './backend-release-gate'
 import { createInstalledRuntimeGate } from './backend-resolution'
 import { createBackendServeSupportResolver } from './backend-serve-support'
@@ -11728,6 +11728,11 @@ async function restartAttachedLocalGateway(profile: string): Promise<void> {
   }
 }
 
+// A backend that answers 503 "Restart required" (it outlived a checkout move on disk) is restarted
+// once by Desktop instead of waiting for the Models-page button: the refusal is the backend asking
+// for exactly this, and every risky call keeps failing until a process loads the new code.
+const restartCodeSkewedBackend = createCodeSkewAutoRestart(restartAttachedLocalGateway, rememberLog)
+
 // Forget a cached descriptor. Nothing is killed: the gateway behind it owns its
 // own lifetime (`hermes gateway ensure` attach semantics), so the next
 // ensure*() for this key simply re-dials. Every retire path — dispatch probe
@@ -16427,6 +16432,13 @@ ipcMain.handle('hermes:api', async (_event, request) => {
     // renderer, where the invoke wrapper strips it to a one-line message.
     rememberLog(formatApiRequestFailure(request, error))
     flushDesktopLogBufferSync()
+
+    // A code-skew 503 is the backend declaring it must restart to load the checkout on disk:
+    // start that restart here instead of only surfacing the refusal (the renderer's manual
+    // "Restart backend" button stays as the visible affordance and fallback).
+    if (isCodeSkewRestartRequiredError(error)) {
+      restartCodeSkewedBackend(typeof request?.profile === 'string' ? request.profile : '')
+    }
 
     throw error
   }

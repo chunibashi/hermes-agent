@@ -54,3 +54,58 @@ export async function recycleOwnedBackend(deps: RecycleOwnedBackendDeps): Promis
 
   return target
 }
+
+/** True when a failed IPC call is the backend's post-checkout code-skew 503 ("Restart required: …"). */
+export function isCodeSkewRestartRequiredError(error: unknown): boolean {
+  const text = error instanceof Error ? error.message : String(error ?? '')
+
+  return /Restart required:/i.test(text)
+}
+
+/** A drain takes minutes, and a restart that did not clear the skew (the checkout moved again)
+ *  must not become a restart loop — one automatic attempt per cooldown. */
+export const CODE_SKEW_AUTO_RESTART_COOLDOWN_MS = 5 * 60_000
+
+/**
+ * Restart the backend once per code-skew episode.
+ *
+ * The 503 IS the backend asking to be restarted: it loaded a checkout that has since moved on, and
+ * every risky call (the models picker included) keeps refusing until a process loads the new code.
+ * Leaving recovery to someone opening Settings → Models and pressing "Restart backend" leaves that
+ * refusal window open, so the failure that proves the skew also triggers the restart. The 503 still
+ * reaches the renderer (the manual button stays the visible affordance); this only makes the
+ * recovery happen. Never concurrent, never more than once per cooldown.
+ */
+export function createCodeSkewAutoRestart(
+  restart: (profile: string) => Promise<void>,
+  log: (message: string) => void,
+  opts: { cooldownMs?: number; now?: () => number } = {}
+): (profile: string) => boolean {
+  const cooldownMs = opts.cooldownMs ?? CODE_SKEW_AUTO_RESTART_COOLDOWN_MS
+  const now = opts.now ?? Date.now
+  let lastAttemptAt: null | number = null
+  let inFlight = false
+
+  return profile => {
+    if (inFlight) {
+      return false
+    }
+
+    const at = now()
+
+    if (lastAttemptAt !== null && at - lastAttemptAt < cooldownMs) {
+      return false
+    }
+
+    lastAttemptAt = at
+    inFlight = true
+    log('[gateway] Backend answered a code-skew 503 (Restart required); restarting it to load the checkout on disk.')
+    void restart(profile)
+      .catch(error => log(`[gateway] Code-skew auto-restart failed: ${String(error)}`))
+      .finally(() => {
+        inFlight = false
+      })
+
+    return true
+  }
+}
