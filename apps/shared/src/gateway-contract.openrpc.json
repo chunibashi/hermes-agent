@@ -11957,6 +11957,11 @@
             "default": false,
             "title": "Server Requests",
             "type": "boolean"
+          },
+          "desktop_local": {
+            "default": false,
+            "title": "Desktop Local",
+            "type": "boolean"
           }
         },
         "title": "ClientCapabilitiesParams",
@@ -27217,6 +27222,11 @@
           },
           "subdir": {
             "title": "Subdir",
+            "type": "string"
+          },
+          "tier": {
+            "default": "community",
+            "title": "Tier",
             "type": "string"
           }
         },
