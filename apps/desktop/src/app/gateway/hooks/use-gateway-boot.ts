@@ -662,7 +662,7 @@ export function useGatewayBoot({
       // can leave a half-open TCP connection: no close event fires, so
       // connectionState stays 'open' while every RPC hangs until its per-call
       // timeout — prompt.submit's is 30 minutes, which reads as "enter does
-      // nothing until I restart the app". Probe liveness with a short-bounded
+      // nothing until I restart the app". Probe liveness with a bounded
       // ping; on failure force the socket down so the onState handler above
       // schedules a reconnect (and resetTileRuntimeBindings re-resumes tiles),
       // instead of letting the user's next submit hang against a dead socket.
@@ -671,9 +671,13 @@ export function useGatewayBoot({
       // mid-tool-call can starve its loop past this budget while perfectly
       // alive, and tearing the socket down then feeds the gateway's
       // ws_orphan_reap interrupt — the turn dies as a bare "Operation
-      // interrupted." placeholder. While any session still reports working,
-      // one inconclusive probe DEFERS the teardown behind a bounded re-probe;
-      // only an exhausted streak (or no in-flight work) closes.
+      // interrupted." placeholder. The same holds between turns: post-turn
+      // cleanup (memory commit, compression, plugin registration) can miss a
+      // probe with `$workingSessionIds` already at zero, which is the
+      // "分支失败: Hermes gateway connection closed" false kill after long
+      // turns. One inconclusive probe DEFERS the teardown behind a bounded
+      // re-probe; only an exhausted streak closes (see
+      // gateway-liveness-policy.ts).
       try {
         await gateway.request('ping', {}, LIVENESS_PROBE_TIMEOUT_MS)
         livenessProbeFailures = 0
@@ -1395,7 +1399,28 @@ export function useGatewayBoot({
     // min-lifetime grace with no store change afterwards would stay open
     // forever. Pool keepalive touches are gone (the canonical gateway outlives
     // its viewers); only this recompute tick remains.
-    const pruneTimer = setInterval(() => recomputeKeptGateways(), 60_000)
+    //
+    // Background self-heal (#stream-drop-no-focus): an unfocused-but-visible
+    // window fires none of the recovery signals (no 'focus', no
+    // 'visibilitychange' — Electron keeps the document 'visible' while
+    // blurred, no 'online'), so a half-open socket whose TCP the OS discarded
+    // sits dead until the user clicks back — streaming work stalls behind a
+    // stale error card. This 60s tick is the one thing that always runs, so
+    // probe on it too. Gated on the socket APPEARING open: that is exactly
+    // the state the backoff loop never covers (nothing schedules a redial
+    // while 'open' is reported). A genuinely closed socket already rides
+    // attemptReconnect's own backoff. reconnectNow()'s liveness ping
+    // force-closes a provably-dead socket (streak-exhausted) and the normal
+    // close→backoff→redial→resume machinery takes over; no-op while healthy
+    // (probe answers inside LIVENESS_PROBE_TIMEOUT_MS) and safe mid-turn (the
+    // in-flight work streak policy defers the teardown).
+    const pruneTimer = setInterval(() => {
+      recomputeKeptGateways()
+
+      if (gatewayOpen()) {
+        void reconnectNow()
+      }
+    }, 60_000)
 
     const offWorking = $workingSessionIds.subscribe(() => recomputeKeptGateways())
     const offAttention = $attentionSessionIds.subscribe(() => recomputeKeptGateways())

@@ -2085,9 +2085,9 @@ function probeSecondaryLiveness(entry: Secondary): void {
       // can starve its event loop past the probe budget, and force-closing it
       // feeds the backend's ws_orphan_reap, interrupting the valid turn
       // (#94769 review). Apply the SAME streak policy as the primary's probe
-      // (decideLivenessForceClose): defer the first failure while work is
-      // in flight behind a bounded re-probe, close only when the streak is
-      // exhausted — or immediately when nothing is in flight to protect.
+      // (decideLivenessForceClose): defer the first failure — whether or not
+      // work is in flight, since a GIL-stalled backend can also miss a probe
+      // between turns — and close only when the streak is exhausted.
       entry.livenessProbeFailures += 1
 
       // Counted RPCs alone under-report in-flight work: prompt.submit returns

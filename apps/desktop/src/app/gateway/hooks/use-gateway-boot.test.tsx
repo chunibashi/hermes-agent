@@ -1904,11 +1904,24 @@ describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => 
     // renderer WebSocket object. Leave readyState OPEN, swallow the liveness
     // ping (a half-open socket never answers), and emit only resume. The wake
     // path no longer blind-closes an open-looking socket — it probes first and
-    // closes only when the probe times out.
+    // closes only when the probe streak is exhausted (30s budget + 3s re-probe
+    // + 30s re-probe = ~63s for a persistently-silent socket).
     FakeWebSocket.pingMode = 'silent'
     act(() => powerResume?.())
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(5_100)
+      // One unanswered probe is not proof of death (busy-but-healthy or a
+      // GIL-stalled gap between turns): the first failure defers, so the
+      // socket is still open after a single 30s budget.
+      await vi.advanceTimersByTimeAsync(30_100)
+    })
+
+    expect(staleSocket.readyState).toBe(FakeWebSocket.OPEN)
+    expect($gatewayState.get()).toBe('open')
+
+    // The bounded re-probe also goes unanswered → the streak is exhausted and
+    // the socket is torn down so the backoff reconnect can heal it.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(3_000 + 30_100)
     })
 
     expect(staleSocket.readyState).toBe(FakeWebSocket.CLOSED)
@@ -2426,12 +2439,18 @@ describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => 
 
     // A wake signal (power resume / network online / window visible) nudges
     // reconnectNow. With the socket still reporting open it must PROBE rather
-    // than skip; the swallowed ping times out and forces the socket down.
+    // than skip; the swallowed ping times out and — after the streak is
+    // exhausted (30s budget + 3s re-probe + 30s re-probe) — forces the
+    // socket down.
     act(() => window.dispatchEvent(new Event('online')))
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(5_100)
+      await vi.advanceTimersByTimeAsync(30_100)
     })
-    // The probe timeout (5s) force-closed the socket → 'closed' → the backoff
+    // One unanswered probe defers; the bounded re-probe also goes unanswered.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(3_000 + 30_100)
+    })
+    // The probe streak force-closed the socket → 'closed' → the backoff
     // timer schedules a reconnect; let it fire and re-dial.
     await advanceBackoff()
 
@@ -2505,7 +2524,9 @@ describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => 
 
     act(() => window.dispatchEvent(new Event('online')))
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(5_100)
+      // The full probe budget elapses and the ping is still unanswered: the
+      // first failure must DEFER (not close) while the turn rides the socket.
+      await vi.advanceTimersByTimeAsync(30_100)
     })
 
     // First inconclusive probe with work in flight: the socket must survive —
@@ -2553,7 +2574,7 @@ describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => 
     for (let nudge = 0; nudge < 3; nudge += 1) {
       act(() => window.dispatchEvent(new Event('online')))
       await act(async () => {
-        await vi.advanceTimersByTimeAsync(10_000)
+        await vi.advanceTimersByTimeAsync(35_000)
       })
     }
 
@@ -2570,14 +2591,14 @@ describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => 
     expect($gatewayState.get()).toBe('open')
   })
 
-
   // Background self-heal (#stream-drop-no-focus): an unfocused-but-visible
   // window fires NONE of the recovery signals (no focus, no visibilitychange —
-  // Electron keeps the document visible while blurred, no online). The only
-  // thing that always runs is the 60s keepalive tick. A half-open socket (OS
-  // discarded TCP, JS still reports open) must be force-closed and redialed by
-  // that tick alone, or streaming work stalls behind a stale error card until
-  // the user clicks back.
+  // Electron keeps the document visible while blurred, no online). A half-open
+  // socket (OS discarded TCP, JS still reports open) must be force-closed and
+  // redialed on a periodic tick, or streaming work stalls behind a stale error
+  // card until the user clicks back. The 60s keepalive tick that provided this
+  // was removed with the dead pool subsystem (c63d465dbc); a recurring probe is
+  // still required.
   it('keepalive tick: probes and force-closes a half-open socket with no focus/visibility/online signal', async () => {
     render(<Harness />)
     await flushAsync()
@@ -2585,14 +2606,20 @@ describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => 
     const socketCountBefore = FakeWebSocket.instances.length
     // The backend never answers (sleep/wake TCP black hole), and — crucially —
     // we dispatch NO focus/visibilitychange/online event: the window is blurred
-    // but visible. Only the 60s keepalive tick may wake the socket.
+    // but visible.
     FakeWebSocket.pingMode = 'silent'
 
-    // Wait out one keepalive tick (60s) plus the probe timeout (5s).
+    // A recovery signal nudges a probe; with no signal ever arriving, the
+    // half-open socket must still be healed by the periodic keepalive tick.
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(60_000 + 5_100)
+      await vi.advanceTimersByTimeAsync(60_000)
     })
-    // The probe timeout force-closed the socket → 'closed' → backoff redials.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(30_100)
+    })
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(3_000 + 30_100)
+    })
     await advanceBackoff()
 
     expect(FakeWebSocket.instances.length).toBeGreaterThan(socketCountBefore)
@@ -2640,8 +2667,8 @@ describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => 
     await act(async () => {
       const recovery = reconnectGateway({ source: 'restart-followthrough' })
 
-      // The 5s probe budget must elapse before the deferral is decided.
-      await vi.advanceTimersByTimeAsync(5_100)
+      // The full probe budget must elapse before the deferral is decided.
+      await vi.advanceTimersByTimeAsync(30_100)
       await expect(recovery).resolves.toBeUndefined()
     })
 
@@ -2673,15 +2700,19 @@ describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => 
     expect($gatewayState.get()).toBe('open')
     const socketCountBefore = FakeWebSocket.instances.length
 
-    // No turn in flight: silence has no innocent explanation.
+    // No turn in flight: a single unanswered probe still defers (a busy
+    // backend can be GIL-stalled between turns), so the streak must exhaust
+    // before the close fires and the backoff loop takes over.
     FakeWebSocket.pingMode = 'silent'
 
     await act(async () => {
       const recovery = reconnectGateway({ source: 'restart-followthrough' })
 
-      // The probe budget elapses, the close fires, the backoff loop takes over.
-      await vi.advanceTimersByTimeAsync(5_100)
+      await vi.advanceTimersByTimeAsync(30_100)
       await expect(recovery).resolves.toBeUndefined()
+    })
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(3_000 + 30_100)
     })
     await advanceBackoff()
 

@@ -28,11 +28,29 @@ describe('decideLivenessForceClose', () => {
     expect(decision.reason).toBe('failure-streak-exhausted')
   })
 
-  it('closes immediately with no work in flight (legacy shape unchanged)', () => {
+  it('defers a first failure with no work in flight (single probe is not proof of death)', () => {
     const decision = decideLivenessForceClose({ workingSessionCount: 0, consecutiveFailures: 1 })
 
-    expect(decision.close).toBe(true)
-    expect(decision.reason).toBe('no-in-flight-work')
+    expect(decision.close).toBe(false)
+    expect(decision.reason).toBe('in-flight-work-deferred')
+  })
+
+  it('defers the first failure even with no work in flight (busy-but-healthy between turns)', () => {
+    // An idle socket can fail a single probe while the gateway is GIL-stalled
+    // between turns (memory commit, plugin registration) — one unanswered
+    // probe is not proof of death. Only the streak closes.
+    const first = decideLivenessForceClose({ workingSessionCount: 0, consecutiveFailures: 1 })
+
+    expect(first.close).toBe(false)
+    expect(first.reason).toBe('in-flight-work-deferred')
+
+    const exhausted = decideLivenessForceClose({
+      workingSessionCount: 0,
+      consecutiveFailures: LIVENESS_PROBE_FAILURE_STREAK
+    })
+
+    expect(exhausted.close).toBe(true)
+    expect(exhausted.reason).toBe('no-in-flight-work')
   })
 
   it('never lets a deferred defer outlive the streak boundary', () => {
@@ -46,13 +64,15 @@ describe('decideLivenessForceClose', () => {
   })
 
   it('coerces malformed counters defensively instead of throwing', () => {
+    // NaN/negative working count normalizes to 0; a sub-1 failure count
+    // normalizes to 1 (the first failure, below the streak) → deferred.
     expect(decideLivenessForceClose({ workingSessionCount: Number.NaN, consecutiveFailures: 0 })).toEqual({
-      close: true,
-      reason: 'no-in-flight-work'
+      close: false,
+      reason: 'in-flight-work-deferred'
     })
     expect(decideLivenessForceClose({ workingSessionCount: -3, consecutiveFailures: -10 })).toEqual({
-      close: true,
-      reason: 'no-in-flight-work'
+      close: false,
+      reason: 'in-flight-work-deferred'
     })
   })
 })
