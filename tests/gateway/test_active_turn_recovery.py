@@ -497,7 +497,11 @@ async def test_unclean_restart_never_ledgers_a_failed_turn_boundary_as_a_reply(t
     transcript marker, not an AI reply: ledgering it would make the boot sweep clear
     ``resume_pending`` for the same session_key and the recovery wake would never fire
     (2026-10-21/22 telegram silence behind the ♻️ redelivery card). The marked turn must
-    instead resume."""
+    instead resume.
+
+    The boundary is written AFTER a completed assistant reply, so alternation repair merges the
+    two consecutive assistant rows — which drops ``display_kind`` from the repaired transcript
+    view. The ledger path must judge from the durable row, not the repaired view (#135320)."""
     from agent.turn_failure_copy import AUTOMATION_INTERRUPTED_NOTICE, FAILED_TURN_DISPLAY_KIND
     from gateway.delivery_ledger import sweep_recoverable
 
@@ -509,6 +513,8 @@ async def test_unclean_restart_never_ledgers_a_failed_turn_boundary_as_a_reply(t
         entry.session_id,
         {"role": "user", "content": "[IMPORTANT: Background process proc_x completed normally (exit code 0)]",
          "display_kind": "internal_notification"})
+    # A completed assistant reply, then the settle-written boundary — consecutive assistant rows.
+    store.append_to_transcript(entry.session_id, {"role": "assistant", "content": "Finished."})
     store.append_to_transcript(
         entry.session_id,
         {"role": "assistant", "content": AUTOMATION_INTERRUPTED_NOTICE, "display_kind": FAILED_TURN_DISPLAY_KIND})

@@ -1108,6 +1108,7 @@ class GatewayStartupMixin:
         nothing, any other goes to the delivery ledger for the boot sweep. Without the ledger a
         presentable reply stays marked and resumes."""
         from gateway.delivery_ledger import compute_obligation_id, ledger_enabled, record_crash_left_reply
+        from agent.turn_failure_copy import FAILED_TURN_DISPLAY_KIND
         ledger_on = await asyncio.to_thread(ledger_enabled)
         cutoff = time.time() - max_age_seconds  # older markers are cleared, never acted on
         with self.session_store._lock:
@@ -1123,6 +1124,19 @@ class GatewayStartupMixin:
             started = started_at.timestamp()  # aware UTC marker; a pre-upgrade naive one reads as local
             if started < cutoff:
                 continue
+            # The last durable row (NOT the repaired transcript view): a settle-written failed-turn
+            # boundary (``AUTOMATION_INTERRUPTED_NOTICE`` etc.) is a system marker, not a crash-left
+            # reply. ``_rows_to_conversation``'s alternation repair merges consecutive assistant rows
+            # and drops ``display_kind`` from the merged dict, so the transcript view cannot judge
+            # this — read the durable row directly (#135320).
+            try:
+                if await asyncio.to_thread(self._last_durable_display_kind, session_id) == FAILED_TURN_DISPLAY_KIND:
+                    logger.info(
+                        "Crash-left ledger: skipping %s: last durable row is a failed-turn boundary "
+                        "(settled, not a crash-left reply)", key)
+                    continue
+            except Exception as exc:
+                logger.debug("Crash-left ledger display-kind probe failed for %s: %s", key, exc)
             text = self._crash_left_reply(await self.async_session_store.load_transcript(session_id),
                                           started, origin)
             if text is None or (text and not ledger_on):
@@ -1137,6 +1151,29 @@ class GatewayStartupMixin:
                 ledgered += 1
         return ledgered
 
+    def _last_durable_display_kind(self, session_id: str) -> Optional[str]:
+        """``display_kind`` of the newest active durable row for *session_id* (``None`` when absent).
+
+        Deliberately NOT the ``load_transcript`` view: alternation repair can merge the final
+        assistant row into its predecessor and drop ``display_kind``, which would make a
+        failed-turn boundary look like an ordinary reply. Routes exactly like ``load_transcript``
+        (reroute map, then the durable compression tip) so this reads the same physical transcript
+        the settle boundary was written to."""
+        import contextlib
+        resolved = session_id
+        with contextlib.suppress(Exception):
+            resolved = self.session_store._follow_reroutes(resolved)
+        db = self.session_store._db_for_session_id(resolved)
+        if db is None:
+            return None
+        with contextlib.suppress(Exception):
+            resolved = db.get_compression_tip(resolved) or resolved
+            row = db._read_one(
+                "SELECT display_kind FROM messages WHERE session_id = ? AND active = 1 "
+                "ORDER BY id DESC LIMIT 1", (resolved,))
+            return row["display_kind"] if row is not None else None
+        return None
+
     def _crash_left_reply(self, history: list, started: float, origin) -> Optional[str]:
         """What a crash-left turn owes, judged as live delivery would have: ``None`` when it never
         persisted a final reply after *started*; ``""`` when nothing would have been presented (a
@@ -1150,19 +1187,11 @@ class GatewayStartupMixin:
         from gateway.run import _sanitize_gateway_final_response
         from gateway.run_turn import _unexpected_silence_reply
         from gateway.warning_notifications import diagnostic_turn_muted
-        from agent.turn_failure_copy import FAILED_TURN_DISPLAY_KIND
         from hermes_cli.timefmt import coerce_epoch
         visible = [m for m in history if m.get("role") not in ("session_meta", "system")]
         last = visible[-1] if visible else {}
         if (last.get("role") != "assistant" or last.get("tool_calls") or not isinstance(last.get("content"), str)
                 or (coerce_epoch(last.get("timestamp")) or 0) < started):
-            return None
-        if last.get("display_kind") == FAILED_TURN_DISPLAY_KIND:
-            # A failed-turn boundary (``AUTOMATION_INTERRUPTED_NOTICE`` written by
-            # ``settle_recovered_unattended``, the partial-failure notice, ...) is a system
-            # transcript marker, not an AI reply: ledgering it as a crash-left reply makes the
-            # boot sweep clear ``resume_pending`` for the same session_key, and the recovery
-            # wake never fires (2026-10-21/22 telegram silence behind the ♻️ redelivery card).
             return None
         prompt = next((m for m in reversed(visible) if m.get("role") == "user"), {})
         if is_machinery_display_kind(prompt.get("display_kind")):
