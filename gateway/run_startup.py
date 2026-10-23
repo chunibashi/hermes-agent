@@ -846,6 +846,20 @@ class GatewayStartupMixin:
             from hermes_state_runtime import list_session_admissions
             freshness = _auto_continue_freshness_window()
             for authority in all_authorities(self):
+                # A hard kill (SIGKILL / OOM / VM death) can leave the interrupted turn in
+                # ``started`` when the drain never got to settle it. Authority bring-up runs
+                # ``recover_session_inputs`` (started -> unknown) BEFORE adapters connect, but
+                # this sweep must not depend on that ordering: re-run it here (idempotent) so a
+                # stale ``started`` row can never slip past the cut/ack checks below and surface
+                # as the manual 「重启期间该轮次已丢弃」 card the user has to click.
+                try:
+                    from hermes_state_runtime import recover_session_inputs
+                    await asyncio.to_thread(
+                        recover_session_inputs, authority.db, epoch=authority.epoch)
+                except Exception as exc:
+                    logger.warning(
+                        "Restart recovery: pre-sweep started->unknown pass failed for %s: %s",
+                        authority.profile_id, exc)
                 try:
                     rows = authority.db._read_all(
                         "SELECT id, session_key, last_activity_at FROM sessions "
@@ -854,62 +868,86 @@ class GatewayStartupMixin:
                     logger.debug("Unknown-sweep session scan failed for %s: %s", authority.profile_id, exc)
                     continue
                 for row in rows:
-                    owner = authority.logical_owner(row["id"])
+                    # One failing session must never abort the sweep for every other session
+                    # (a stale ``unknown`` row then keeps its 「重启期间该轮次已丢失」 card and
+                    # blocks the chat until the user clicks Discard). Isolate each session;
+                    # the failure is logged, the sweep moves on.
                     try:
-                        # Full history (not just pending): an AI-requested watchdog restart
-                        # interrupts the turn to ``terminal/interrupted`` which is NOT pending.
-                        all_rows = list_session_admissions(
-                            authority.db, session_id=owner, pending_only=False)
-                    except Exception:
-                        continue
-                    if not all_rows:
-                        continue
-                    fresh = bool(
-                        freshness <= 0
-                        or (row["last_activity_at"]
-                            and (time.time() - float(row["last_activity_at"])) <= freshness))
-                    ref = SessionRef(authority.profile_id, owner)
-                    for admission in all_rows:
-                        if admission["status"] != "unknown":
-                            continue
-                        try:
-                            await authority.resolve_unknown_as_owner(
-                                ref, admission["admission_id"], admission["generation"])
-                            logger.info(
-                                "Restart recovery: auto-acknowledged unknown admission %s for %s "
-                                "(previously lost turn no longer blocks the queue)",
-                                admission["admission_id"], row["session_key"])
-                        except Exception as exc:
-                            logger.info("Restart recovery: auto-resolve of unknown %s failed: %s",
-                                        admission["admission_id"], exc)
-                    # Wake when a turn was cut short by a restart and nobody continued after it:
-                    # the most recent ``unknown`` (crash) or ``interrupted`` (watchdog
-                    # planned-stop) with no ``completed`` turn after it. A completed turn after
-                    # the cut means the user already continued the conversation — no wake.
-                    if not fresh:
-                        continue
-                    cut_idx = None
-                    for i, r in enumerate(all_rows):
-                        # A cut turn is either ``unknown`` (crash, never settled) or
-                        # ``terminal``/``interrupted`` (settled but interrupted by the restart
-                        # — what an unclean exit leaves in session_admissions).
-                        if r["status"] == "unknown" or (
-                                r["status"] == "terminal" and r["outcome"] == "interrupted"):
-                            cut_idx = i
-                    if cut_idx is None:
-                        continue
-                    has_completed_after = any(
-                        r["status"] == "terminal" and r["outcome"] == "completed"
-                        for r in all_rows[cut_idx + 1:])
-                    if has_completed_after:
-                        continue
-                    self._schedule_recovery_wake_for_key(row["session_key"])
-                    logger.info(
-                        "Restart recovery: scheduled wake for interrupted session %s "
-                        "(%s turn cut short by restart)",
-                        row["session_key"], all_rows[cut_idx]["status"])
+                        await self._sweep_one_local_session(authority, row, freshness)
+                    except Exception as exc:
+                        logger.warning(
+                            "Restart recovery: sweep failed for local session %s: %s",
+                            row.get("session_key", row.get("id")), exc)
         except Exception as exc:
-            logger.debug("Restart recovery unknown-sweep failed: %s", exc)
+            # Was debug: a sweep that raises leaves stale ``unknown`` rows behind, and the
+            # desktop then shows 「重启期间该轮次已丢失」 with a Discard button the user must
+            # click before the chat can continue. That failure must be visible in the log.
+            logger.warning("Restart recovery unknown-sweep failed: %s", exc)
+
+    async def _sweep_one_local_session(self, authority, row, freshness) -> None:
+        """Sweep one local session's orphaned admissions: settle every ``unknown`` turn and
+        wake the session if a restart cut its most recent turn (no completed turn after it).
+
+        Isolated per session so a single bad row cannot abort the sweep for the rest
+        (2026-10-21: an exception here skipped every later session, leaving its
+        ``unknown`` card requiring a manual Discard).
+        """
+        from gateway.session_contract import SessionRef
+        from hermes_state_runtime import list_session_admissions
+        owner = authority.logical_owner(row["id"])
+        try:
+            # Full history (not just pending): an AI-requested watchdog restart
+            # interrupts the turn to ``terminal/interrupted`` which is NOT pending.
+            all_rows = list_session_admissions(
+                authority.db, session_id=owner, pending_only=False)
+        except Exception:
+            return
+        if not all_rows:
+            return
+        ref = SessionRef(authority.profile_id, owner)
+        for admission in all_rows:
+            if admission["status"] != "unknown":
+                continue
+            try:
+                await authority.resolve_unknown_as_owner(
+                    ref, admission["admission_id"], admission["generation"])
+                logger.info(
+                    "Restart recovery: auto-acknowledged unknown admission %s for %s "
+                    "(previously lost turn no longer blocks the queue)",
+                    admission["admission_id"], row["session_key"])
+            except Exception as exc:
+                logger.info("Restart recovery: auto-resolve of unknown %s failed: %s",
+                            admission["admission_id"], exc)
+        # Wake when a turn was cut short by a restart and nobody continued after it:
+        # the most recent ``unknown`` (crash) or ``interrupted`` (watchdog
+        # planned-stop) with no ``completed`` turn after it. A completed turn after
+        # the cut means the user already continued the conversation — no wake.
+        if not (
+            freshness <= 0
+            or (row["last_activity_at"]
+                and (time.time() - float(row["last_activity_at"])) <= freshness)
+        ):
+            return
+        cut_idx = None
+        for i, r in enumerate(all_rows):
+            # A cut turn is either ``unknown`` (crash, never settled) or
+            # ``terminal``/``interrupted`` (settled but interrupted by the restart
+            # — what an unclean exit leaves in session_admissions).
+            if r["status"] == "unknown" or (
+                    r["status"] == "terminal" and r["outcome"] == "interrupted"):
+                cut_idx = i
+        if cut_idx is None:
+            return
+        has_completed_after = any(
+            r["status"] == "terminal" and r["outcome"] == "completed"
+            for r in all_rows[cut_idx + 1:])
+        if has_completed_after:
+            return
+        self._schedule_recovery_wake_for_key(row["session_key"])
+        logger.info(
+            "Restart recovery: scheduled wake for interrupted session %s "
+            "(%s turn cut short by restart)",
+            row["session_key"], all_rows[cut_idx]["status"])
 
     def _startup_should_abort(self) -> bool:
         return self._restart_requested or self._draining or self._shutdown_event.is_set()
@@ -1950,7 +1988,10 @@ class GatewayStartupMixin:
             await self._sweep_startup_unknown_admissions()
             self._schedule_restart_recovery_wakes()
         except Exception:
-            logger.debug("restart recovery wake scheduling failed", exc_info=True)
+            # Was debug: a sweep that raises leaves stale ``unknown`` rows behind, and the
+            # desktop then shows 「重启期间该轮次已丢失」 with a Discard button the user must
+            # click before the chat can continue. That failure must be visible in the log.
+            logger.warning("restart recovery wake scheduling failed", exc_info=True)
         # Surface state.db init failures to messaging platforms before the user loses data.
         # See #88235.
         await self._send_session_db_warning_notifications()
