@@ -145,6 +145,42 @@ describe('useMessageStream status-bar usage scoping', () => {
     expect(sessionStates.get(SID)?.usage).toEqual($currentUsage.get())
   })
 
+  it('carries the turn cap so a reader can draw "N left of M" from the frame alone', () => {
+    mountStream()
+
+    // The canonical top-level counters (gateway/session_usage.py::usage_stats).
+    act(() =>
+      stream.handleEvent({
+        payload: { api_calls: 7, max_turns: 600, turns_used: 7, turns_remaining: 593 },
+        session_id: SID,
+        type: 'session.usage'
+      })
+    )
+    expect($currentUsage.get()).toMatchObject({ calls: 7, max_turns: 600, turns_used: 7, turns_remaining: 593 })
+
+    // …and the nested `usage` view (tui_usage) an older bundle reads.
+    $currentUsage.set({ ...BASELINE })
+    mountStream()
+    act(() =>
+      stream.handleEvent({
+        payload: { usage: { calls: 7, max_turns: 600, turns_used: 7, turns_remaining: 593 } },
+        session_id: SID,
+        type: 'session.usage'
+      })
+    )
+    expect($currentUsage.get()).toMatchObject({ calls: 7, max_turns: 600, turns_used: 7, turns_remaining: 593 })
+  })
+
+  it('never fabricates a turn cap the frame did not carry', () => {
+    mountStream()
+
+    act(() => stream.handleEvent({ payload: { api_calls: 1 }, session_id: SID, type: 'session.usage' }))
+
+    // No live agent → no budget: absent, not 0 (a reader must tell "unknown" from a real zero).
+    expect($currentUsage.get()?.max_turns).toBeUndefined()
+    expect($currentUsage.get()?.turns_remaining).toBeUndefined()
+  })
+
   it('paints the status-bar meters from either half of the gateway frame shape', () => {
     $currentUsage.set({ calls: 0, input: 0, output: 0, total: 0 })
     mountStream()

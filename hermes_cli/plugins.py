@@ -1387,8 +1387,9 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
             self._validate_plugin_config_schema(manifest)
             self._load_plugin(manifest)
         if manifests:
-            logger.info("Plugin discovery complete: %d found, %d enabled", len(self._plugins),
-                        sum(1 for p in self._plugins.values() if p.enabled))
+            logger.info("Plugin discovery complete: %d found, %d enabled home=%s manager=%s h=%s",
+                        len(self._plugins), sum(1 for p in self._plugins.values() if p.enabled),
+                        self.home_path, id(self), id(self._hooks))
 
     def _gate_manifest(
         self, manifest: PluginManifest, disabled: set[str], enabled: Optional[set[str]],

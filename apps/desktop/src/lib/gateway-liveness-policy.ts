@@ -21,17 +21,18 @@
  * Policy
  * ──────
  * Backend silence is EXPECTED while a session is working, so a probe timeout
- * is inconclusive rather than proof of death. The first such timeout is
- * deferred: keep the socket and schedule one bounded re-probe instead. Only
- * when the failure STREAK reaches `LIVENESS_PROBE_FAILURE_STREAK` (the
- * re-probe also went unanswered) do we treat the socket as genuinely dead
- * and let the normal close→backoff→redial machinery take over. The same
- * streak applies with NO work in flight: a busy-but-healthy backend can be
- * GIL-stalled between turns too (post-turn cleanup, memory commit, plugin
- * registration), and a single unanswered probe in that window is not proof
- * of death either. Worst case this adds one re-probe interval to
- * genuine-dead detection; it removes the teardown entirely for
- * busy-but-healthy backends.
+ * is inconclusive rather than proof of death. While work is in flight
+ * (`workingSessionCount > 0`) the socket is NEVER torn down, no matter how
+ * long the unanswered streak grows: a model call can hold the gateway's
+ * GIL-stall for 100-200s (a NAP/relay turn, #74874's family), far past any
+ * probe budget, and a mid-turn teardown rejects the in-flight RPCs and
+ * interrupts the running turn. The only close path is the IDLE one: with no
+ * work on the wire, a single unanswered probe is still not proof of death
+ * (post-turn cleanup, memory commit, plugin registration can GIL-stall the
+ * loop with `workingSessionIds` already at zero), so the failure STREAK must
+ * reach `LIVENESS_PROBE_FAILURE_STREAK` before we rebuild the socket.
+ * Worst case this adds one re-probe interval to genuine-dead detection;
+ * it removes the teardown entirely for busy-but-healthy backends.
  *
  * Pure and Electron-free so the streak boundaries are assertable directly
  * (mirroring gateway-liveness usage in use-gateway-boot).
@@ -51,8 +52,9 @@
 export const LIVENESS_PROBE_TIMEOUT_MS = 30_000
 
 /**
- * Consecutive unanswered probes tolerated while work is in flight.
- * The same streak applies with no work in flight (see decideLivenessForceClose).
+ * Consecutive unanswered probes tolerated while IDLE (`workingSessionCount` is
+ * zero) before the socket is rebuilt. In-flight work never closes (see
+ * decideLivenessForceClose), so this streak only gates the idle close path.
  */
 export const LIVENESS_PROBE_FAILURE_STREAK = 2
 
@@ -72,7 +74,7 @@ export interface LivenessForceCloseInput {
   consecutiveFailures: number
 }
 
-export type LivenessForceCloseReason = 'in-flight-work-deferred' | 'failure-streak-exhausted' | 'no-in-flight-work'
+export type LivenessForceCloseReason = 'in-flight-work-deferred' | 'no-in-flight-work'
 
 export interface LivenessForceCloseDecision {
   close: boolean
@@ -82,29 +84,37 @@ export interface LivenessForceCloseDecision {
 /**
  * Decide whether one liveness-probe failure should force the socket down.
  *
- * - Streak < max         → keep the socket; the caller schedules a bounded
- *                          re-probe ('in-flight-work-deferred').
- * - Streak ≥ max         → close ('failure-streak-exhausted' when work is in
- *                          flight, 'no-in-flight-work' when idle):
- *                          a persistently unresponsive socket must still be
- *                          rebuilt, never trusted forever.
- *
- * The STREAK — not the work state — is the death signal. An idle socket from
- * a busy-but-healthy backend can also fail a single probe: the gateway is
- * GIL-stalled between turns (memory commit, compression, plugin registration)
- * while `$workingSessionIds` already reports zero, and tearing the socket
- * down on that first failure is the false kill that produces "branch failed:
- * Hermes gateway connection closed" right after every long turn.
+ * - Work in flight (`workingSessionCount > 0`)  → NEVER close. A model call
+ *   holds the gateway's GIL-stall (a NAP/relay turn can be 100-200s of
+ *   back-to-back API calls with `$workingSessionIds` pinned above zero the
+ *   whole time). The probe budget and streak are both invisible to that
+ *   window — a busy-but-healthy backend MUST keep its socket, no matter how
+ *   long the streak grows, or the teardown rejects the in-flight RPCs
+ *   ("分支失败: Hermes gateway connection closed") and `ws_orphan_reap`
+ *   interrupts the running turn into a bare "Operation interrupted."
+ * - Idle (`workingSessionCount === 0`)        → streak-gated. A single
+ *   unanswered probe is not proof of death even here: the gateway can be
+ *   GIL-stalled between turns (post-turn cleanup, memory commit, plugin
+ *   registration) with the count already at zero. Only when the failure
+ *   STREAK reaches `LIVENESS_PROBE_FAILURE_STREAK` do we treat the socket as
+ *   genuinely dead and rebuild it. This is the branch after a long turn where
+ *   the old immediate-close-on-idle fired.
  */
 export function decideLivenessForceClose(input: LivenessForceCloseInput): LivenessForceCloseDecision {
   const workingSessionCount = Math.max(0, Math.floor(input.workingSessionCount))
   const consecutiveFailures = Math.max(1, Math.floor(input.consecutiveFailures))
 
+  // Work is on the wire: the probe is inconclusive no matter how long the
+  // streak. Keep the socket, defer. A genuinely-dead socket mid-turn will
+  // surface as a per-RPC timeout (or the next turn's submit failure), which
+  // the user can recover from; tearing it down here does active harm.
+  if (workingSessionCount > 0) {
+    return { close: false, reason: 'in-flight-work-deferred' }
+  }
+
   if (consecutiveFailures < LIVENESS_PROBE_FAILURE_STREAK) {
     return { close: false, reason: 'in-flight-work-deferred' }
   }
 
-  return workingSessionCount > 0
-    ? { close: true, reason: 'failure-streak-exhausted' }
-    : { close: true, reason: 'no-in-flight-work' }
+  return { close: true, reason: 'no-in-flight-work' }
 }

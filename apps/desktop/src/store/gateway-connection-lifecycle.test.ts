@@ -506,7 +506,7 @@ describe('reconnectSecondaryGateways', () => {
     expect(getConnectionFor).toHaveBeenCalledTimes(1)
   })
 
-  it('closes a live-in-use secondary on a forced wake only when its liveness probe fails', async () => {
+  it('never closes a live-in-use secondary; closes it once idle and the streak is exhausted', async () => {
     // A half-open socket never fires a close event, so skipping it would strand
     // an in-flight request until its per-call timeout (30 min for
     // prompt.submit). The wake path probes instead: a dead transport is
@@ -516,10 +516,12 @@ describe('reconnectSecondaryGateways', () => {
     // since returned (turn completion arrives as stream events), so the entry
     // shows no counted request — the registry's live-scope hook is what tells
     // the probe there is work to protect.
+    let liveScopes = new Set(['conn:homelab::default'])
+
     configureGatewayRegistry({
       onEvent: vi.fn(),
       foregroundScopes: () => new Set(['conn:homelab::default']),
-      liveScopes: () => new Set(['conn:homelab::default'])
+      liveScopes: () => liveScopes
     } as never)
 
     const getConnectionFor = vi.fn(async ({ connectionId, profile }: { connectionId: string; profile: string }) =>
@@ -562,10 +564,22 @@ describe('reconnectSecondaryGateways', () => {
     expect(socket.close).not.toHaveBeenCalled()
     expect(socket.connectionState).toBe('open')
 
-    // The bounded re-probe also goes unanswered: the failure streak is
-    // exhausted and the socket is torn down so its reconnect backoff can
-    // heal it — a persistently unresponsive backend is never trusted forever.
+    // The bounded re-probe also goes unanswered — and the turn is STILL in
+    // flight, so the socket must survive it too. 2026-10-22 forensics: every
+    // one of 71 reconnects in a day happened with a turn in flight; closing
+    // here rejects the in-flight RPCs ("分支失败: Hermes gateway connection
+    // closed") and re-dials under a running turn.
     await vi.advanceTimersByTimeAsync(LIVENESS_REPROBE_DELAY_MS)
+
+    expect(socket.close).not.toHaveBeenCalled()
+    expect(socket.connectionState).toBe('open')
+
+    // The turn ends: the same persistent silence now exhausts the IDLE streak
+    // and rebuilds the transport — a persistently unresponsive backend is
+    // never trusted forever, and idle recovery must not be wedged.
+    liveScopes = new Set()
+    reconnectSecondaryGateways({ forceOpenSockets: true })
+    await vi.advanceTimersByTimeAsync(0)
 
     expect(socket.close).toHaveBeenCalledOnce()
     expect(socket.connectionState).toBe('closed')

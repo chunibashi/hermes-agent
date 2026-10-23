@@ -2554,7 +2554,7 @@ describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => 
     expect(FakeWebSocket.instances.length).toBeGreaterThanOrEqual(socketCountBefore)
   })
 
-  it('wake probe: repeated timeouts while busy still rebuild the socket (no deadlock)', async () => {
+  it('wake probe: repeated timeouts while a turn is in flight NEVER rebuild the socket', async () => {
     render(<Harness />)
     await flushAsync()
     expect($gatewayState.get()).toBe('open')
@@ -2578,10 +2578,25 @@ describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => 
       })
     }
 
+    // 2026-10-22 forensics: 71 reconnects in one day and EVERY one had a turn
+    // in flight — the streak closed a live socket mid-turn and rejected the
+    // in-flight RPCs ("分支失败: Hermes gateway connection closed"). A busy
+    // socket is never torn down, no matter how long the streak grows: the
+    // incarnation the running turn rides on must survive.
+    expect(FakeWebSocket.instances.length).toBe(socketCountBefore)
+    expect($gatewayState.get()).toBe('open')
+
     clearAllSessionStates()
 
-    // The streak guard only DELAYS the teardown; a persistently unresponsive
-    // socket is still rebuilt rather than trusted forever.
+    // Idle recovery is not wedged: once the work flag is gone the same
+    // persistent silence exhausts the IDLE streak and rebuilds the transport.
+    for (let nudge = 0; nudge < 2; nudge += 1) {
+      act(() => window.dispatchEvent(new Event('online')))
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(35_000)
+      })
+    }
+
     expect(FakeWebSocket.instances.length).toBeGreaterThan(socketCountBefore)
 
     FakeWebSocket.pingMode = 'pong'
@@ -2623,6 +2638,65 @@ describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => 
     await advanceBackoff()
 
     expect(FakeWebSocket.instances.length).toBeGreaterThan(socketCountBefore)
+    expect($gatewayState.get()).toBe('open')
+  })
+
+  // The tick-side half of A (2026-10-22 forensics: 71 reconnects in one day,
+  // every one with a turn in flight). A mid-turn probe can only ever produce an
+  // inconclusive failure — a model call starves the gateway loop for 100s+ — and
+  // the policy no longer closes mid-turn, so the tick must not send it at all.
+  // Probing only while idle keeps the 60s tick pointed at the state where a
+  // failure IS evidence: a half-open socket in a blurred, idle window.
+  it('keepalive tick: never probes while a turn is in flight, probes again once idle', async () => {
+    const pings: string[] = []
+
+    class PingRecordingSocket extends FakeWebSocket {
+      send(data: string) {
+        try {
+          const frame = JSON.parse(data) as { method?: string }
+
+          if (frame.method === 'ping') {
+            pings.push(frame.method)
+          }
+        } catch {
+          // Non-JSON frames are not probes.
+        }
+
+        super.send(data)
+      }
+    }
+
+    ;(globalThis as { WebSocket: unknown }).WebSocket = PingRecordingSocket
+
+    render(<Harness />)
+    await flushAsync()
+    expect($gatewayState.get()).toBe('open')
+
+    // A turn rides this socket.
+    act(() => {
+      publishSessionState('rt-tick-busy', {
+        ...createClientSessionState(null),
+        storedSessionId: 's-tick-busy',
+        busy: true
+      })
+    })
+    expect($workingSessionIds.get()).toContain('s-tick-busy')
+
+    // Three tick intervals pass with the turn in flight: no probe is sent.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(60_000 * 3)
+    })
+
+    expect(pings).toHaveLength(0)
+
+    // Idle again: the next tick probes (and, with the backend answering, the
+    // socket stays up).
+    clearAllSessionStates()
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(60_000)
+    })
+
+    expect(pings.length).toBeGreaterThan(0)
     expect($gatewayState.get()).toBe('open')
   })
 

@@ -18,14 +18,16 @@ describe('decideLivenessForceClose', () => {
     }
   })
 
-  it('closes once the unanswered streak reaches the limit even while busy', () => {
-    const decision = decideLivenessForceClose({
-      workingSessionCount: 3,
-      consecutiveFailures: LIVENESS_PROBE_FAILURE_STREAK
-    })
+  it('never closes while a turn is in flight, no matter how long the streak (#分支失败 / #95327)', () => {
+    // A NAP/relay turn holds the gateway's GIL-stall for 100-200s of back-to-back
+    // API calls with $workingSessionIds pinned above zero the whole time. The
+    // probe budget and streak are both invisible to that window: a busy-but-healthy
+    // backend must KEEP its socket or the teardown rejects the in-flight RPCs.
+    for (let failures = 1; failures <= LIVENESS_PROBE_FAILURE_STREAK + 2; failures += 1) {
+      const decision = decideLivenessForceClose({ workingSessionCount: 3, consecutiveFailures: failures })
 
-    expect(decision.close).toBe(true)
-    expect(decision.reason).toBe('failure-streak-exhausted')
+      expect(decision).toEqual({ close: false, reason: 'in-flight-work-deferred' })
+    }
   })
 
   it('defers a first failure with no work in flight (single probe is not proof of death)', () => {
@@ -53,13 +55,14 @@ describe('decideLivenessForceClose', () => {
     expect(exhausted.reason).toBe('no-in-flight-work')
   })
 
-  it('never lets a deferred defer outlive the streak boundary', () => {
-    // Walk the whole streak: every failure below the limit defers; the limit
-    // itself and anything beyond close.
+  it('keeps deferring every streak failure while work is in flight', () => {
+    // Busy sockets never close; the walk is a regression tripwire so a future
+    // change that reintroduces streak-close-mid-turn fails loudly.
     for (let failures = 1; failures <= LIVENESS_PROBE_FAILURE_STREAK + 2; failures += 1) {
       const decision = decideLivenessForceClose({ workingSessionCount: 1, consecutiveFailures: failures })
 
-      expect(decision.close).toBe(failures >= LIVENESS_PROBE_FAILURE_STREAK)
+      expect(decision.close).toBe(false)
+      expect(decision.reason).toBe('in-flight-work-deferred')
     }
   })
 

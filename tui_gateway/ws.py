@@ -107,7 +107,10 @@ _WS_DISPATCH_QUEUE_MAX = 256
 # belongs here.
 _WS_CONCURRENT_READ_METHODS = frozenset({"session.context_breakdown", "session.resume"})
 _WS_CONCURRENT_READ_LIMIT = 2
-# Reads admitted beyond the running ones; one more parks the reader (as the serial lane did).
+# Reads run CONCURRENTLY while fewer than this many are outstanding; one past it dispatches
+# serially in _dispatch_loop instead. It never parks the reader: a semaphore awaited from the
+# read loop stopped the whole connection at ten outstanding reads, so the ping/interrupt/answer
+# frames behind them were never even read (the client's 30s timeout fired on a live gateway).
 _WS_WAITING_READ_LIMIT = 8
 # A viewer's answer to an open server→client request (its response frame, a batch clarify's
 # ``clarify.lock``) settles in memory and never queues: the serial lane may be running the very handler
@@ -118,6 +121,15 @@ _WS_ANSWER_METHODS = frozenset({"clarify.lock"})
 def _answers_open_request(req: Any) -> bool:
     from tui_gateway.server_requests import is_response_frame
     return isinstance(req, dict) and (req.get("method") in _WS_ANSWER_METHODS or is_response_frame(req))
+
+# Cheap, user-facing control RPCs that must NEVER queue behind a slow handler on the serial lane:
+# an interrupt, a clarify/approval answer, a cancel, or a control read stuck behind a 30s read is a
+# dead client (「停止失败」「无法发送澄清响应」). They run on their own lane (_dispatch_control_loop),
+# in arrival order among themselves.
+_WS_CONTROL_METHODS = frozenset({
+    "session.interrupt", "session.steer", "session.redirect", "prompt.cancel",
+    "clarify.respond", "approval.respond", "connection.respond", "session.control.read",
+})
 
 # Per-token streaming frames are coalesced: buffered and flushed as a batch on a short timer instead
 # of waking the loop once per token (each wakeup competes with the agent turn for the GIL). Keep this
@@ -431,12 +443,12 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: 
         return {"jsonrpc": "2.0", "error": {"code": code, "message": message}, "id": req_id}
 
     pending: asyncio.Queue = asyncio.Queue(maxsize=_WS_DISPATCH_QUEUE_MAX)
+    control_pending: asyncio.Queue = asyncio.Queue(maxsize=_WS_DISPATCH_QUEUE_MAX)
     dispatcher: asyncio.Task | None = None
+    control_dispatcher: asyncio.Task | None = None
     concurrent_reads: set[asyncio.Task] = set()
     started_reads: set[asyncio.Task] = set()
     concurrent_read_slots = asyncio.Semaphore(_WS_CONCURRENT_READ_LIMIT)
-    # Running + waiting reads: taken by the reader before a read is queued, so a flood parks it.
-    read_admission = asyncio.Semaphore(_WS_CONCURRENT_READ_LIMIT + _WS_WAITING_READ_LIMIT)
     # Set when the read lane could not send a reply: ends the reader without cancelling the
     # control handler the serial lane is running (it finishes, then the dispatcher stops).
     send_failed: asyncio.Future = asyncio.get_running_loop().create_future()
@@ -477,7 +489,6 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: 
 
     def _finish_concurrent_read(task: asyncio.Task) -> None:
         # Here, not in the task: a task cancelled before its first step never runs its body.
-        read_admission.release()
         concurrent_reads.discard(task)
         started_reads.discard(task)
         with contextlib.suppress(asyncio.CancelledError, _SendFailed):
@@ -496,21 +507,46 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: 
         """Dispatch controls in arrival order; bounded expensive read-only projections run alongside them."""
         while (req := await _next_request()) is not stop:
             req_method = req.get("method") if isinstance(req, dict) else None
-            if req_method in _WS_CONCURRENT_READ_METHODS:
+            if (req_method in _WS_CONCURRENT_READ_METHODS
+                    and len(concurrent_reads) < _WS_CONCURRENT_READ_LIMIT + _WS_WAITING_READ_LIMIT):
                 task = asyncio.create_task(_dispatch_concurrent_read(req))
                 concurrent_reads.add(task)
                 task.add_done_callback(_finish_concurrent_read)
                 continue
+            # A read past the waiting cap is dispatched HERE, serially: slower for that one
+            # projection, but the reader keeps draining frames (see _queue_request).
+            await _dispatch_one(req)
+
+    async def _next_control_request() -> Any:
+        """The next control frame, or ``stop`` once the read lane failed to send a reply."""
+        step = asyncio.ensure_future(control_pending.get())
+        await asyncio.wait({step, send_failed}, return_when=asyncio.FIRST_COMPLETED)
+        if step.done():
+            return stop if send_failed.done() else step.result()
+        step.cancel()
+        return stop
+
+    async def _dispatch_control_loop() -> None:
+        """Dispatch cheap user-facing controls on their own lane. An interrupt or a clarify answer
+        queued behind a slow handler on the serial lane is a client that reads the gateway as dead,
+        so these never wait for it; arrival order is kept among themselves."""
+        while (req := await _next_control_request()) is not stop:
             await _dispatch_one(req)
 
     async def _queue_request(req: Any) -> None:
         if _answers_open_request(req):
             await _dispatch_one(req)
             return
-        if isinstance(req, dict) and req.get("method") in _WS_CONCURRENT_READ_METHODS:
-            # A read past the waiting cap parks the reader, as the serial lane did; released
-            # when its task ends (a read cancelled before it ran releases it too).
-            await _unless_dispatch_failed(read_admission.acquire())
+        if isinstance(req, dict) and req.get("method") in _WS_CONTROL_METHODS:
+            # Answers and session control bypass the serial lane entirely: no read slot, no
+            # ordering behind a slow handler. They keep their own arrival order on the control lane.
+            await _unless_dispatch_failed(control_pending.put(req))
+            return
+        # The reader NEVER waits on a read lane here. A semaphore held across this await used to
+        # park the whole connection once ten reads were outstanding, so pings, interrupts and
+        # clarify answers behind them were never even read — the client's 30s timeout fired while
+        # the gateway looked dead. Admission is decided in _dispatch_loop instead (concurrent read
+        # up to the cap, serial after it), and pending's maxsize is the only backpressure.
         await _unless_dispatch_failed(pending.put(req))
 
     async def _end_reads() -> None:
@@ -524,12 +560,12 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: 
         await asyncio.gather(*concurrent_reads, return_exceptions=True)
 
     async def _unless_dispatch_failed(aw: Any) -> Any:
-        """Await *aw*, or raise _SendFailed once a reply could not be sent (the dispatcher ended on one,
-        or the read lane failed one)."""
-        assert dispatcher is not None
+        """Await *aw*, or raise _SendFailed once a reply could not be sent (either lane's dispatcher
+        ended on one, or the read lane failed one)."""
+        assert dispatcher is not None or control_dispatcher is not None
         step = asyncio.ensure_future(aw)
         try:
-            await asyncio.wait({step, dispatcher, send_failed}, return_when=asyncio.FIRST_COMPLETED)
+            await asyncio.wait({step, dispatcher, control_dispatcher, send_failed}, return_when=asyncio.FIRST_COMPLETED)
             if step.done():
                 return step.result()
             raise _SendFailed
@@ -577,6 +613,7 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: 
             return
 
         dispatcher = asyncio.create_task(_dispatch_loop())
+        control_dispatcher = asyncio.create_task(_dispatch_control_loop())
         while True:
             try:
                 raw = await _unless_dispatch_failed(ws.receive_text())
@@ -625,6 +662,19 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: 
             failure = None if dispatcher.cancelled() else dispatcher.exception()
             if failure is not None and not isinstance(failure, _SendFailed):
                 _log.error("ws dispatcher failed peer=%s", peer, exc_info=failure)
+        if control_dispatcher is not None:
+            # Same drain as the serial lane: the control frames read before the disconnect finish,
+            # unless the connection itself was cancelled (server shutdown).
+            task = asyncio.current_task()
+            if task is not None and task.cancelling():
+                control_dispatcher.cancel()
+            else:
+                with contextlib.suppress(_SendFailed):
+                    await _unless_dispatch_failed(control_pending.put(stop))
+            await asyncio.wait({control_dispatcher})
+            failure = None if control_dispatcher.cancelled() else control_dispatcher.exception()
+            if failure is not None and not isinstance(failure, _SendFailed):
+                _log.error("ws control dispatcher failed peer=%s", peer, exc_info=failure)
         await _end_reads()
         if authority_connection is not None:
             # After the dispatcher drained: an in-flight authority call must not see its connection closed.

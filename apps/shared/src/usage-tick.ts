@@ -12,6 +12,10 @@ export interface TickUsage {
   calls: number
   completion: number
   compressions?: number
+  /** The session's tool-call cap; absent (never 0) when no live agent reported a budget. */
+  max_turns?: number
+  turns_used?: number
+  turns_remaining?: number
   context_estimated?: boolean
   context_max?: number
   context_percent?: number
@@ -35,6 +39,10 @@ type CountSource =
   | 'prompt_tokens'
   | 'reasoning_tokens'
   | 'total_tokens'
+// The turn cap is published only at the top level (``usage_stats``); the nested ``usage`` view
+// already carries it, so a top-level tick maps it here rather than dropping it.
+type BudgetCount = 'max_turns' | 'turns_remaining' | 'turns_used'
+type BudgetSource = 'max_turns' | 'turns_remaining' | 'turns_used'
 
 const num = (value: null | number | undefined): number | undefined =>
   value !== null && value !== undefined && Number.isFinite(value) ? value : undefined
@@ -51,6 +59,13 @@ const COUNTERS: [Count, CountSource[]][] = [
   ['prompt', ['prompt_tokens']],
   ['completion', ['completion_tokens']],
   ['total', ['total_tokens']]
+]
+
+// The budget keys are identical on both sides, so they map one-to-one (no aliasing).
+const BUDGET_COUNTERS: [BudgetCount, BudgetSource[]][] = [
+  ['max_turns', ['max_turns']],
+  ['turns_remaining', ['turns_remaining']],
+  ['turns_used', ['turns_used']]
 ]
 
 function contextFields(p: UsageTickPayload): Partial<TickUsage> {
@@ -122,6 +137,16 @@ export function usageFromTick<Nested = Usage>(
     const values = sources.map(source => num(payload[source]))
     const value = values.find(Boolean) ?? values.find(v => v !== undefined)
 
+    if (value !== undefined) {
+      usage[key] = value
+    }
+  }
+
+  for (const [key, sources] of BUDGET_COUNTERS) {
+    const value = num(payload[sources[0]])
+
+    // `0` is a legitimate "unlimited" rendering on the owner side; it is still carried so the
+    // viewer can distinguish "no budget" (absent) from "budget is 0".
     if (value !== undefined) {
       usage[key] = value
     }

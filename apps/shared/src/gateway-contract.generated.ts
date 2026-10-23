@@ -590,6 +590,9 @@ export interface Usage {
   completion?: number
   total?: number
   calls?: number
+  max_turns?: number | null
+  turns_used?: number | null
+  turns_remaining?: number | null
   compressions?: number | null
   context_used?: number | null
   context_max?: number | null
@@ -3474,6 +3477,9 @@ export interface SessionUsageResult {
   completion?: number
   total?: number
   calls?: number
+  max_turns?: number | null
+  turns_used?: number | null
+  turns_remaining?: number | null
   compressions?: number | null
   context_used?: number | null
   context_max?: number | null
@@ -4677,6 +4683,9 @@ export interface SessionStats {
   total_tokens: number
   reasoning_tokens: number
   api_calls: number
+  max_turns?: number | null
+  turns_used?: number | null
+  turns_remaining?: number | null
   last_prompt_tokens: number
   context_tokens: number
   context_length?: number | null
@@ -5721,6 +5730,9 @@ export interface SessionUsagePayload {
   total_tokens?: number | null
   reasoning_tokens?: number | null
   api_calls?: number | null
+  max_turns?: number | null
+  turns_used?: number | null
+  turns_remaining?: number | null
   last_prompt_tokens?: number | null
   context_tokens?: number | null
   context_length?: number | null

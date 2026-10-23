@@ -2084,10 +2084,11 @@ function probeSecondaryLiveness(entry: Secondary): void {
       // ONE missed ping is not proof of death: a live backend mid tool call
       // can starve its event loop past the probe budget, and force-closing it
       // feeds the backend's ws_orphan_reap, interrupting the valid turn
-      // (#94769 review). Apply the SAME streak policy as the primary's probe
-      // (decideLivenessForceClose): defer the first failure — whether or not
-      // work is in flight, since a GIL-stalled backend can also miss a probe
-      // between turns — and close only when the streak is exhausted.
+      // (#94769 review). Apply the SAME policy as the primary's probe
+      // (decideLivenessForceClose): work in flight NEVER closes — a model call
+      // can hold the loop for 100s+ (#74874), far past any probe budget — and
+      // an idle socket closes only once the streak is exhausted (a GIL-stalled
+      // backend can also miss a probe between turns).
       entry.livenessProbeFailures += 1
 
       // Counted RPCs alone under-report in-flight work: prompt.submit returns

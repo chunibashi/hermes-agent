@@ -249,7 +249,10 @@ def _fit_archive(live_rows, display):
 
 async def prepare_history(authority, ref):
     """``local_history``'s lineage read, off the owner loop; the locked part re-reads only the live tip."""
-    target = transcript_target(authority, ref)
+    # transcript_target may restore_local_session (DB read + policy rebuild) for a cold session: it
+    # ran synchronously on the owner loop and, like display_rows, is pure I/O + CPU — offload it so
+    # a slow cold resume never freezes the WS reader (clarify.respond / interrupt starve, 30s timeouts).
+    target = await asyncio.to_thread(transcript_target, authority, ref)
     return target, await asyncio.to_thread(display_rows, authority.db, target)
 
 

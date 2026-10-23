@@ -894,6 +894,13 @@ export interface UsageStats {
   /** Session prompt-cache hit rate, 0–100. Omitted (not 0) when the provider reports no cache reads. */
   cache_hit_pct?: number
   calls: number
+  /** The session's tool-call cap (``agent.max_turns``, resolved). Absent when no live agent
+   *  reported a budget yet — a reader must not render that as "unlimited". */
+  max_turns?: number
+  /** Iterations consumed off that cap (``agent.iteration_budget.used``). */
+  turns_used?: number
+  /** ``max_turns - turns_used``. Absent for the same reason as ``max_turns``. */
+  turns_remaining?: number
   /** Successful context compressions in the current live agent runtime. */
   compressions?: number
   context_max?: number

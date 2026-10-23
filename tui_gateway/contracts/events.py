@@ -322,6 +322,11 @@ class SessionUsagePayload(Payload):
     total_tokens: int | None = None
     reasoning_tokens: int | None = None
     api_calls: int | None = None
+    # The session's tool-call cap and its consumption (``agent.iteration_budget``). Absent — never
+    # ``0`` — when no live agent has reported a budget yet.
+    max_turns: int | None = None
+    turns_used: int | None = None
+    turns_remaining: int | None = None
     last_prompt_tokens: int | None = None
     context_tokens: int | None = None
     context_length: int | None = None

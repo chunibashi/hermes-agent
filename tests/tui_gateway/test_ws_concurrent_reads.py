@@ -79,7 +79,14 @@ async def settle(predicate, timeout=5.0):
 
 
 @pytest.mark.asyncio
-async def test_waiting_context_reads_keep_reader_backpressure(rig):
+async def test_read_flood_never_parks_the_reader(rig):
+    """A read flood is bounded by CONCURRENCY, not by stopping the reader.
+
+    The old contract parked the reader on a read-admission semaphore once ten reads were
+    outstanding, so every frame behind them — a ping, an interrupt, a clarify answer — went
+    unread until a read finished. On a live gateway that read the connection as dead and the
+    client's 30s timeout fired. Reads past the cap now dispatch serially instead.
+    """
     sock, gates, log = rig
     gates["session.context_breakdown"] = release = asyncio.Event()
     task = asyncio.create_task(ws_mod.handle_ws(sock))
@@ -87,17 +94,42 @@ async def test_waiting_context_reads_keep_reader_backpressure(rig):
     for n in range(burst):
         sock.inbound.put_nowait(rpc(n))
     try:
-        # A bounded reader parks with frames unread; give it every chance to drain them all.
-        assert not await settle(lambda: sock.inbound.empty(), timeout=2.0)
-        bound = ws_mod._WS_DISPATCH_QUEUE_MAX + ws_mod._WS_CONCURRENT_READ_LIMIT + ws_mod._WS_WAITING_READ_LIMIT + 2
-        assert sock.received <= bound, (sock.received, bound)
-        assert sum(entry.startswith("start:") for entry in log) == ws_mod._WS_CONCURRENT_READ_LIMIT
+        # The reader keeps draining; it is bounded by the dispatch queue, never by a read slot.
+        assert await settle(lambda: sock.received > ws_mod._WS_DISPATCH_QUEUE_MAX, timeout=5.0)
+        # Only the concurrent cap runs at once — the rest are serialized behind it.
+        assert sum(entry.startswith("start:") for entry in log) >= ws_mod._WS_CONCURRENT_READ_LIMIT
     finally:
         release.set()
     assert await settle(lambda: sock.inbound.empty())
     sock.inbound.put_nowait(None)
-    await asyncio.wait_for(task, 30)
+    await asyncio.wait_for(task, 60)
     assert len(sock.sent) == burst + 1  # gateway.ready + one reply per read
+
+
+@pytest.mark.asyncio
+async def test_control_frame_behind_a_read_flood_is_still_dispatched(rig):
+    """The invariant the reader-parking bug broke: a control sent last is not starved.
+
+    Kept under ``_WS_DISPATCH_QUEUE_MAX`` so this pins READER ADMISSION, not queue backpressure:
+    on the old code the 11th read parked the reader and the interrupt behind it was never read.
+    """
+    sock, gates, log = rig
+    gates["session.context_breakdown"] = release = asyncio.Event()
+    task = asyncio.create_task(ws_mod.handle_ws(sock))
+    flood = ws_mod._WS_CONCURRENT_READ_LIMIT + ws_mod._WS_WAITING_READ_LIMIT + 8
+    assert flood < ws_mod._WS_DISPATCH_QUEUE_MAX
+    for n in range(flood):
+        sock.inbound.put_nowait(rpc(n))
+    sock.inbound.put_nowait(rpc("stop", "session.interrupt"))
+    try:
+        assert await settle(lambda: "start:stop" in log, timeout=5.0), \
+            "the interrupt behind a read flood was never dispatched"
+        assert "done:stop" in log
+    finally:
+        release.set()
+    sock.inbound.put_nowait(None)
+    await asyncio.wait_for(task, 60)
+    assert "cancelled:stop" not in log
 
 
 @pytest.mark.asyncio

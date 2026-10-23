@@ -222,6 +222,12 @@ class SessionStats(Result):
     total_tokens: int
     reasoning_tokens: int
     api_calls: int
+    # The session's tool-call cap and its consumption (``agent.iteration_budget``, resolved from
+    # ``agent.max_turns``). Null when no live agent has reported a budget yet — a viewer must not
+    # read that as "unlimited".
+    max_turns: int | None = None
+    turns_used: int | None = None
+    turns_remaining: int | None = None
     last_prompt_tokens: int
     context_tokens: int
     context_length: int | None = None

@@ -1388,6 +1388,13 @@ def _get_usage(agent) -> dict:
         "completion": g("session_completion_tokens"), "total": g("session_total_tokens"),
         "calls": g("session_api_calls"),
     }
+    # The turn cap rides the same view so a reader never has to pair this dict with the raw
+    # counters (``session.stats``) to draw "N left of M". Omitted — never 0 — with no live budget.
+    budget = getattr(agent, "iteration_budget", None)
+    if budget is not None:
+        usage.update(max_turns=int(getattr(budget, "max_total", 0) or 0),
+                     turns_used=int(getattr(budget, "used", 0) or 0),
+                     turns_remaining=int(getattr(budget, "remaining", 0) or 0))
     comp = getattr(agent, "context_compressor", None)
     if comp:
         from agent.context_breakdown import context_usage_fields

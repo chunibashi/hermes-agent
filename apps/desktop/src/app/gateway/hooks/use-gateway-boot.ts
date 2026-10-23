@@ -1406,18 +1406,24 @@ export function useGatewayBoot({
     // blurred, no 'online'), so a half-open socket whose TCP the OS discarded
     // sits dead until the user clicks back — streaming work stalls behind a
     // stale error card. This 60s tick is the one thing that always runs, so
-    // probe on it too. Gated on the socket APPEARING open: that is exactly
-    // the state the backoff loop never covers (nothing schedules a redial
-    // while 'open' is reported). A genuinely closed socket already rides
-    // attemptReconnect's own backoff. reconnectNow()'s liveness ping
-    // force-closes a provably-dead socket (streak-exhausted) and the normal
-    // close→backoff→redial→resume machinery takes over; no-op while healthy
-    // (probe answers inside LIVENESS_PROBE_TIMEOUT_MS) and safe mid-turn (the
-    // in-flight work streak policy defers the teardown).
+    // probe on it too — but ONLY while idle.
+    //
+    // Mid-turn probing is pointless and harmful (2026-10-22 forensics: 71
+    // reconnects in one day, every one of them with a turn in flight): a model
+    // call starves the gateway's loop for 100s+ (#74874), the ping misses, and
+    // with the old policy the streak then tore down a live socket — rejecting
+    // the in-flight RPCs ("分支失败: Hermes gateway connection closed") and
+    // re-dialing. The liveness policy now never closes mid-turn, so a probe
+    // there could not act anyway; skipping it keeps the 60s tick doing what it
+    // is for — healing a half-open socket in an IDLE app, where a probe
+    // failure is real evidence. Gated on the socket APPEARING open: that is
+    // exactly the state the backoff loop never covers (nothing schedules a
+    // redial while 'open' is reported). A genuinely closed socket already
+    // rides attemptReconnect's own backoff.
     const pruneTimer = setInterval(() => {
       recomputeKeptGateways()
 
-      if (gatewayOpen()) {
+      if (gatewayOpen() && $workingSessionIds.get().length === 0) {
         void reconnectNow()
       }
     }, 60_000)

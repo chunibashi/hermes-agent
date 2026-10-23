@@ -347,9 +347,16 @@ class SessionAuthority:
             active_generation = handle.execution_generation if handle.execution_state == "running" else None
             prompts = live.controls.snapshot(ref.session_id, active_generation)
             epoch, sequence = live.event_stream.watermark()
-            history = self.unless_deleted(ref, lambda: tuple(local_history(self, ref, prepared)))
-            snapshot = SubscriptionSnapshot(subscription, handle, epoch, sequence, history,
-                                        tuple(self._pending_receipt(r) for r in pending_rows(self, ref)), prompts)
+        # local_history is the resume hot path: a whole-transcript DB read + display projection that
+        # previously ran synchronously on the owner loop (and under the stream lock), freezing the WS
+        # reader for hundreds of ms per resume so clarify.respond / session.interrupt never arrived
+        # and the client timed out at 30s. Read it off the loop; the loop keeps turning while the
+        # worker holds the DB (WAL reads don't block), and the deletion re-check stays race-safe.
+        def _snapshot_history():
+            return tuple(self.unless_deleted(ref, lambda: local_history(self, ref, prepared)))
+        history = await asyncio.to_thread(_snapshot_history)
+        snapshot = SubscriptionSnapshot(subscription, handle, epoch, sequence, history,
+                                    tuple(self._pending_receipt(r) for r in pending_rows(self, ref)), prompts)
         from gateway.session_viewer_close import cancel_persisted_close
         await asyncio.to_thread(cancel_persisted_close, self, ref.session_id)  # the viewer cancels it
         from gateway.session_deferred_pick import reask_on_attach

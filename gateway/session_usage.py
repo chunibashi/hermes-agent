@@ -74,11 +74,23 @@ def plan_gauge(agent) -> dict | None:
                         "resets_at_ms": gauge.resets_at_ms}
     return None
 
+def _turn_budget(agent) -> dict:
+    """The session's tool-call cap (``agent.iteration_budget`` — ``max_iterations``, resolved from
+    ``agent.max_turns`` at build). Omitted, never fabricated, when there is no live agent: a
+    viewer must be able to tell "unlimited / unknown" from a real ``0``."""
+    budget = getattr(agent, "iteration_budget", None)
+    if budget is None:
+        return {}
+    return {"max_turns": int(getattr(budget, "max_total", 0) or 0),
+            "turns_used": int(getattr(budget, "used", 0) or 0),
+            "turns_remaining": int(getattr(budget, "remaining", 0) or 0)}
+
 
 def usage_stats(agent) -> dict:
     """The frozen ``session.usage`` / ``session.stats`` dict; zeros before the first turn built an agent."""
     stats: dict = {key: int(getattr(agent, attr, 0) or 0) for key, attr in _COUNTERS}
     stats.update(_context(agent, getattr(agent, "context_compressor", None)))
+    stats.update(_turn_budget(agent))
     avg_latency = tps = None
     with contextlib.suppress(Exception):
         latencies = list(getattr(agent, "_api_latency_history", None) or [])
@@ -136,6 +148,11 @@ def tui_usage(stats: dict) -> dict:
              "reasoning": stats.get("reasoning_tokens") or 0, "prompt": stats.get("prompt_tokens") or 0,
              "completion": stats.get("completion_tokens") or 0, "total": stats.get("total_tokens") or 0,
              "calls": stats.get("api_calls") or 0}
+    # The turn cap rides the same frame so a viewer never has to pair this dict with the raw
+    # counters (``session.stats``) to draw "N left of M". Absent — never 0 — without a live agent.
+    for key in ("max_turns", "turns_used", "turns_remaining"):
+        if isinstance(stats.get(key), int):
+            usage[key] = stats[key]
     used, maximum = stats.get("last_prompt_tokens") or 0, stats.get("context_length") or 0
     if used and maximum:
         # ``agent/context_breakdown.py::context_usage_fields``: current occupancy, clamped.

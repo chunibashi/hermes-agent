@@ -36,6 +36,10 @@ class Usage(OpenModel):
     completion: int = 0
     total: int = 0
     calls: int = 0
+    # The session's tool-call cap and its consumption; absent (never 0) with no live budget.
+    max_turns: int | None = None
+    turns_used: int | None = None
+    turns_remaining: int | None = None
     compressions: int | None = None
     context_used: int | None = None
     context_max: int | None = None
