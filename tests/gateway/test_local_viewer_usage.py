@@ -10,10 +10,26 @@ import pytest
 from gateway.config import Platform
 
 FIELDS = {'input_tokens', 'output_tokens', 'cache_read_tokens', 'cache_write_tokens', 'prompt_tokens',
-          'completion_tokens', 'total_tokens', 'reasoning_tokens', 'api_calls', 'last_prompt_tokens',
-          'context_tokens', 'context_length', 'config_context_length', 'context_source', 'compression_count',
-          'avg_latency_s', 'tokens_per_s', 'last_turn_tokens', 'rate_limit', 'active_subagents', 'model',
-          'provider', 'fallback_model'}
+          'completion_tokens', 'total_tokens', 'reasoning_tokens', 'api_calls', 'max_turns', 'turns_used',
+          'turns_remaining', 'last_prompt_tokens', 'context_tokens', 'context_length',
+          'config_context_length', 'context_source', 'compression_count', 'avg_latency_s', 'tokens_per_s',
+          'last_turn_tokens', 'rate_limit', 'active_subagents', 'model', 'provider', 'fallback_model'}
+
+
+class _Budget:
+    """The real ``agent.iteration_budget`` shape (``agent/iteration_budget.py``)."""
+
+    def __init__(self, max_total, used):
+        self.max_total = max_total
+        self._used = used
+
+    @property
+    def used(self):
+        return self._used
+
+    @property
+    def remaining(self):
+        return max(0, self.max_total - self._used)
 
 
 def _agent():
@@ -24,9 +40,35 @@ def _agent():
         session_input_tokens=100, session_output_tokens=40, session_cache_read_tokens=10,
         session_cache_write_tokens=5, session_prompt_tokens=115, session_completion_tokens=40,
         session_total_tokens=155, session_reasoning_tokens=3, session_api_calls=2,
+        iteration_budget=_Budget(600, 2),
         context_compressor=compressor, _api_latency_history=deque([1.0, 3.0]),
         _api_output_history=deque([10, 30]), get_rate_limit_state=lambda: None,
         _session_messages=[], _turn_base_usage_anchor=None)
+
+
+def test_usage_stats_reports_the_turn_cap_and_its_consumption():
+    """A viewer must be able to draw "N left of M" from the usage frame alone. The cap is the live
+    agent's ``iteration_budget`` (``agent.max_turns`` resolved at build), so it is right even when
+    the config changed mid-session; with no live agent the keys are ABSENT, never ``0`` — a reader
+    has to tell "unknown" from a real zero."""
+    from gateway.session_usage import tui_usage, usage_stats
+    from tui_gateway.contracts.registry import CANONICAL_METHODS, EVENTS
+
+    stats = usage_stats(_agent())
+    assert (stats['max_turns'], stats['turns_used'], stats['turns_remaining']) == (600, 2, 598)
+    assert stats['max_turns'] - stats['turns_used'] == stats['turns_remaining']
+    CANONICAL_METHODS['session.stats'].result.model_validate(stats)
+    EVENTS['session.usage'].payload.model_validate(stats)
+
+    # The Desktop status bar's view carries the same three figures.
+    usage = tui_usage(stats)
+    assert (usage['max_turns'], usage['turns_used'], usage['turns_remaining']) == (600, 2, 598)
+
+    # No live agent: no fabricated cap.
+    bare = SimpleNamespace(model='fake-model', session_api_calls=0, context_compressor=None,
+                           get_rate_limit_state=lambda: None)
+    assert 'max_turns' not in usage_stats(bare)
+    assert 'max_turns' not in tui_usage(usage_stats(bare))
 
 
 def test_usage_stats_is_exactly_the_frozen_field_list():
@@ -91,6 +133,8 @@ async def test_session_stats_returns_the_same_dict(tmp_path, monkeypatch):
         assert 'result' in reply, reply
         from gateway.session_usage import usage_stats
         assert reply['result'] == usage_stats(agent)
+        # The cap rides the canonical reply, so a viewer needs no second RPC to draw "N left of M".
+        assert reply['result']['max_turns'] == 600 and reply['result']['turns_remaining'] == 598
         CANONICAL_METHODS['session.stats'].result.model_validate(reply['result'])
     finally:
         await connection.close()
@@ -173,6 +217,9 @@ def test_published_usage_view_matches_the_embedded_ticker(agent):
     kind, frame = published[-1]
     assert kind == 'session.usage'
     assert frame['usage'] == _get_usage(agent)
+    # …and the cap is one of the figures both producers agree on (a budget-less agent omits it).
+    if getattr(agent, 'iteration_budget', None) is not None:
+        assert frame['usage']['max_turns'] == 600 and frame['usage']['turns_remaining'] == 598
 
 
 def test_a_window_plans_gauge_rides_the_canonical_usage_feed():
