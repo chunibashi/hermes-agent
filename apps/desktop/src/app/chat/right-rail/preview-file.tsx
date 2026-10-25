@@ -21,9 +21,9 @@ import { FileDiffPanel } from '@/components/chat/diff-lines'
 import { chunkTextLines, SOURCE_SELECT_ALL_EVENT, useFixedRowWindow } from '@/components/chat/fixed-row-window'
 import { LazyShiki as ShikiHighlighter } from '@/components/chat/shiki-highlighter'
 import { PageLoader } from '@/components/page-loader'
-import { writeClipboardText } from '@/components/ui/copy-button'
 import { Tip } from '@/components/ui/tooltip'
 import { translateNow, useI18n } from '@/i18n'
+import { writeClipboardText } from '@/lib/clipboard'
 import {
   desktopFileDiff,
   DesktopFileMissingError,
