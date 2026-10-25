@@ -1347,11 +1347,17 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
         # load survivors in requires_plugins order (see resolve_plugin_load_order).
         winners = resolve_manifest_winners(manifests)
         to_load = {k: m for k, m in winners.items() if self._gate_manifest(m, disabled, enabled)}
-        for lookup_key in resolve_plugin_load_order(to_load):
+        for _idx, lookup_key in enumerate(resolve_plugin_load_order(to_load)):
             manifest = to_load[lookup_key]
             self._warn_python_dependencies(manifest)
             self._validate_plugin_config_schema(manifest)
             self._load_plugin(manifest)
+            if _idx % 3 == 2:
+                # A 70+ plugin sweep imports modules and registers hooks for seconds on end, hogging
+                # the GIL and starving the event loop / control socket during a busy turn. Yield so a
+                # pending session.resume / clarify.respond can make progress mid-sweep.
+                import time as _time
+                _time.sleep(0)
         if manifests:
             logger.info("Plugin discovery complete: %d found, %d enabled home=%s manager=%s h=%s",
                         len(self._plugins), sum(1 for p in self._plugins.values() if p.enabled),

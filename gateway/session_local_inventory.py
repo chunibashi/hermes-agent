@@ -43,7 +43,12 @@ def _grouped(tools):
 
 def _policy_tools(policy, config):
     """The tool list the session's next agent build loads (``agent/agent_init.py`` tool snapshot):
-    the policy's toolsets minus the configured, platform-gated and one-shot disabled ones."""
+    the policy's toolsets minus the configured, platform-gated and one-shot disabled ones.
+
+    ``skip_checks``: this feeds a banner INVENTORY (names grouped by toolset), never the schema the
+    model is given. Probing availability here cost a cold ``check_fn`` sweep (~4.2s for the current
+    30-probe set) on every ``session.resume``, holding the GIL long enough that the desktop's 30s
+    RPC timeout fired. The turn's own agent build still runs the real checks."""
     import model_tools
     from agent.skill_utils import parse_config_string_list
     from toolsets import session_disabled_toolsets, session_platform_tool_drops
@@ -51,7 +56,8 @@ def _policy_tools(policy, config):
     disabled = session_disabled_toolsets(
         parse_config_string_list((config.get("agent") or {}).get("disabled_toolsets")) or None, policy.platform,
         oneshot=policy.source == "oneshot")
-    tools = model_tools.get_tool_definitions(enabled_toolsets=enabled, disabled_toolsets=disabled, quiet_mode=True)
+    tools = model_tools.get_tool_definitions(enabled_toolsets=enabled, disabled_toolsets=disabled,
+                                             quiet_mode=True, skip_checks=True)
     drops = set(session_platform_tool_drops(policy.platform))
     return enabled, [tool for tool in tools or [] if tool["function"]["name"] not in drops]
 

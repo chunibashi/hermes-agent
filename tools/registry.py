@@ -875,9 +875,17 @@ class ToolRegistry:
 
     # ---- Schema retrieval --------------------------------------------
 
-    def get_definitions(self, tool_names: set[str], quiet: bool = False) -> list[dict]:
+    def get_definitions(self, tool_names: set[str], quiet: bool = False, skip_checks: bool = False) -> list[dict]:
         """OpenAI-format schemas for the requested tools whose ``check_fn`` passes (or is
-        absent). Probes use the ~30 s TTL cache so ``hermes tools enable`` lands quickly."""
+        absent). Probes use the ~30 s TTL cache so ``hermes tools enable`` lands quickly.
+
+        ``skip_checks``: never RUN a probe; use an already-cached verdict when one exists and
+        otherwise list the tool. For a caller that only needs the tool NAMES (a banner's inventory)
+        this is the difference between reading the registry and paying a cold ``check_fn`` sweep —
+        the current 30-probe set measured 4.2s (a single vendor-catalog probe was 3.15s), and that
+        sweep ran on every ``session.resume``'s banner build while holding the GIL. A cached False
+        still drops the tool, so the count tracks a warm turn; never a path that decides what the
+        model may call."""
         result = []
         check_results: dict[Callable, bool] = {}
         entries_by_name = {entry.name: entry for entry in self._snapshot_entries()}
@@ -885,10 +893,14 @@ class ToolRegistry:
             entry = entries_by_name.get(name)
             if not entry:
                 continue
-            if entry.check_fn and not _memo_check(entry.check_fn, check_results):
-                if not quiet:
-                    logger.debug("Tool %s unavailable (check failed)", name)
-                continue
+            if entry.check_fn:
+                if skip_checks:
+                    if get_cached_check_fn_result(entry.check_fn) is False:
+                        continue
+                elif not _memo_check(entry.check_fn, check_results):
+                    if not quiet:
+                        logger.debug("Tool %s unavailable (check failed)", name)
+                    continue
             schema_with_name = {**entry.schema, "name": entry.name}
             # Runtime-dynamic overrides (e.g. delegate_task limits); the caller's memo is
             # keyed on config.yaml mtime+size, so config changes invalidate it automatically.

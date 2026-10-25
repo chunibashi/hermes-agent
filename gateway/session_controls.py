@@ -633,10 +633,15 @@ class AuthorityConnection:
         # Its home module, not tui_gateway.server: importing the stdio sidecar points sys.stdout at stderr.
         from tui_gateway.tool_progress import _todo_state_from_history
         history, display = list(snapshot.history), {}
+        # display_projection / _todo_state_from_history are pure CPU over every stored row
+        # (tool previews, shell-command summarization, todo extraction) and ran synchronously
+        # on the owner loop, so a session with many tool rows froze the WS reader for tens of
+        # seconds and clarify.respond / session.interrupt timed out. Offload both to workers.
         if params.get('display_projection'):
             # A micro-compaction merge stays in ``messages`` (an undo target); its originals are what shows.
-            display['display_messages'] = display_projection(
-                [row for row in history if not model_only(row)], self.authority.profile_id)
+            display['display_messages'] = await asyncio.to_thread(
+                display_projection, [row for row in history if not model_only(row)], self.authority.profile_id)
+        todo_state = await asyncio.to_thread(_todo_state_from_history, history)
         return {'session_id': ref.session_id, 'stored_session_id': ref.session_id,
                 'messages': history, **display, 'message_count': len(history),
                 'running': snapshot.handle.execution_state == 'running',
@@ -652,7 +657,7 @@ class AuthorityConnection:
                                                snapshot.handle.ref.session_id),
                 # The newest todo result in the transcript, the snapshot the session's agent hydrates
                 # from and its ``todo.updated`` frames carried: a viewer attaching shows the plan now.
-                'todo_state': _todo_state_from_history(history)}
+                'todo_state': todo_state}
 
     def _spawn_notice(self, ref):
         """Low-disk auto-prune question for this viewer, off the resume reply's path."""

@@ -570,14 +570,14 @@ def _build_no_backend_setup_message() -> str:
     return "\n".join(lines)
 
 
-def _get_plugin_provider(name: str, *, force: bool = False):
+def _get_plugin_provider(name: str):
     """Discover plugins (local import: importing this module must not trigger discovery) and return the named provider."""
     from agent.image_gen_registry import get_provider
     from hermes_cli.plugins import _ensure_plugins_discovered
-    if force:
-        _ensure_plugins_discovered(force=True)
-    else:
-        _ensure_plugins_discovered()
+    # Idempotent: the manager's ``_discovered`` flag short-circuits. A forced refresh here was a
+    # no-op for a missing provider (nothing new to register) yet a 70+ plugin rescan on the tool
+    # execution path; the install/enable path owns the forced refresh.
+    _ensure_plugins_discovered()
     return get_provider(name)
 
 
@@ -690,18 +690,7 @@ def _dispatch_to_plugin_provider(
     configured = _plugin_provider_name()
     if configured is None:
         return None
-    try:
-        provider = _get_plugin_provider(configured)
-    except Exception as exc:
-        logger.debug("image_gen plugin dispatch skipped: %s", exc)
-        return None
-    if provider is None:
-        # Long-lived sessions may have discovered plugins before a bundled backend
-        # was patched in or config changed: retry once with a forced refresh.
-        try:
-            provider = _get_plugin_provider(configured, force=True)
-        except Exception as exc:
-            logger.debug("image_gen plugin force-refresh skipped: %s", exc)
+    provider = _get_plugin_provider(configured)
     if provider is None:
         return _provider_error(
             f"image_gen.provider='{configured}' is set but no plugin registered that name. "

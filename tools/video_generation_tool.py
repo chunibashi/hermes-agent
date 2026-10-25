@@ -103,14 +103,16 @@ def check_video_generation_requirements() -> bool:
 
 
 def _resolve_active_provider():
-    """Active provider or None; a miss forces a discovery refresh (sessions older than the plugin install)."""
+    """Active provider or None.
+
+    A miss means no provider is configured/installed, so there is nothing to re-discover: the
+    manager's ``_discovered`` flag already short-circuits :func:`_ensure_plugins_discovered`, and
+    a forced refresh only rescans 70+ plugins when nothing changed. The install/enable path owns
+    the forced refresh; this runs inside ``dynamic_schema_overrides``, i.e. on every turn's tool
+    definition build, where a force here starved the GIL and stalled session.resume."""
     try:
-        registry_mod, ensure_discovered = _discovered_registry()
-        provider = registry_mod.get_active_provider()
-        if provider is None:
-            ensure_discovered(force=True)
-            provider = registry_mod.get_active_provider()
-        return provider
+        registry_mod, _ = _discovered_registry()
+        return registry_mod.get_active_provider()
     except Exception as exc:
         logger.debug("video_gen provider resolution failed: %s", exc)
         return None

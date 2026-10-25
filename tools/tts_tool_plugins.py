@@ -18,19 +18,16 @@ from tools.tool_backend_helpers import NOUS_MANAGED_PROVIDER
 logger = logging.getLogger("tools.tts_tool")
 
 
-def _lookup_plugin_provider(key: str, *, discover: bool = True, retry: bool = False):
+def _lookup_plugin_provider(key: str, *, discover: bool = True):
     """The registered ``TTSProvider`` named *key*, or None. ``discover`` runs plugin discovery first;
-    ``retry`` re-discovers with ``force=True`` on a miss (a long-lived session may predate the
-    plugin's install). Raises on registry/discovery failure — callers decide if fatal."""
+    it is idempotent (the manager's ``_discovered`` flag short-circuits). A forced refresh on a miss
+    was a no-op for an unregistered provider yet a 70+ plugin rescan on the tool path — the
+    install/enable path owns the forced refresh. Raises on registry failure — callers decide if fatal."""
     from agent.tts_registry import get_provider
     if discover:
         from hermes_cli.plugins import _ensure_plugins_discovered
         _ensure_plugins_discovered()
-    plugin_provider = get_provider(key)
-    if plugin_provider is None and retry:
-        _ensure_plugins_discovered(force=True)
-        plugin_provider = get_provider(key)
-    return plugin_provider
+    return get_provider(key)
 
 
 def _plugin_route_key(provider: str, tts_config: dict[str, Any]) -> Optional[str]:
@@ -96,7 +93,7 @@ def _dispatch_to_plugin_provider(text: str, output_path: str, provider: str, tts
     if key is None:
         return None
     try:
-        plugin_provider = _lookup_plugin_provider(key, retry=True)
+        plugin_provider = _lookup_plugin_provider(key)
     except Exception as exc:
         logger.debug("tts plugin dispatch skipped (discovery failed): %s", exc)
         return None

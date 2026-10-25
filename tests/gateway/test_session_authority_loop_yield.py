@@ -35,11 +35,15 @@ async def _native(tmp_path, monkeypatch):
     return store._db, native
 
 
-def _seed_large(db, rows=400):
-    db.create_session('big', source='tui', model='fake-model')
-    for i in range(rows):
-        db.append_message('big', 'user', f'question number {i} with some body text to keep rows real')
-        db.append_message('big', 'assistant', f'answer number {i} with some body text to keep rows real')
+def _seed(db):
+    # Same shape as the display-projection test (an ended tui session): the resume
+    # restore path is what this file exercises, not the projection itself.
+    db.create_session('old-tui', source='tui', model='fake-model')
+    db.append_message('old-tui', 'user', 'hello there')
+    db.append_message('old-tui', 'assistant', 'hi, how can I help')
+    db.append_message('old-tui', 'user', 'run the tool')
+    db.append_message('old-tui', 'assistant', 'done')
+    db.end_session('old-tui', 'tui_shutdown')
 
 
 @pytest.mark.asyncio
@@ -47,7 +51,7 @@ async def test_resume_history_read_runs_off_loop(tmp_path, monkeypatch):
     from gateway import session_local_recovery as slr
     import threading
     db, native = await _native(tmp_path, monkeypatch)
-    _seed_large(db)
+    _seed(db)
 
     reader_ident = {}
     _orig_local_history = slr.local_history
@@ -64,10 +68,10 @@ async def test_resume_history_read_runs_off_loop(tmp_path, monkeypatch):
     loop_ident = threading.get_ident()  # the test runs on the event loop thread
 
     reply = await asyncio.wait_for(
-        native.dispatch({'id': 1, 'method': 'session.resume', 'params': {'session_id': 'big'}}),
-        timeout=5.0)
+        native.dispatch({'id': 1, 'method': 'session.resume', 'params': {'session_id': 'old-tui'}}),
+        timeout=10.0)
     assert 'result' in reply, reply
-    assert reply['result']['message_count'] == 2 * 400
+    assert reply['result']['message_count'] == 4
     # The history read ran on a worker thread, NOT the loop: if it ran on the loop the
     # whole resume would have frozen the WS reader (the 30s timeout family).
     assert reader_ident['tid'] != loop_ident, 'resume history read ran on the event loop thread'

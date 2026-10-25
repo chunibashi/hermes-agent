@@ -1465,13 +1465,11 @@ def _check_plugin_stt_provider(provider: str) -> bool:
     try:
         from agent.transcription_registry import get_provider
         from hermes_cli.plugins import _ensure_plugins_discovered
+        # Idempotent: the manager's ``_discovered`` flag short-circuits. A forced refresh on a miss
+        # was a no-op for an unregistered provider yet a 70+ plugin rescan; the install/enable path
+        # owns the forced refresh.
         _ensure_plugins_discovered()
         plugin_provider = get_provider(key)
-        if plugin_provider is None:
-            # Match the transcription dispatcher: long-lived processes may need
-            # one refresh after plugins or configuration change.
-            _ensure_plugins_discovered(force=True)
-            plugin_provider = get_provider(key)
     except Exception as exc:
         logger.debug("STT plugin requirements check skipped for '%s': %s", key, exc)
         return False
