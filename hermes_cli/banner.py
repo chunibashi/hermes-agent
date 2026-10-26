@@ -95,11 +95,18 @@ HERMES_CADUCEUS = """[#CD7F32]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢀⣀⡀⠀⣀⣀�
 
 # === Skills scanning ===
 
-# Per-process caches: ``None`` until computed, then a 1-tuple ``(value,)`` so a computed ``None``
-# is distinguishable from "not yet computed". Reset by assigning ``None`` (tests, ``hermes skills``).
-_available_skills_cache: Optional[tuple] = None
-_git_banner_state_cache: Optional[tuple] = None
-_latest_release_cache: Optional[tuple] = None
+# Per-(profile,process) caches: ``dict[scope, tuple]`` — the launch home under the launch profile
+# and one entry per served profile's HERMES_HOME override. ``None`` until computed, then a 1-tuple
+# ``(value,)`` so a computed ``None`` is distinguishable from "not yet computed". Reset by
+# assigning ``None`` (tests, ``hermes skills``). Scope-keyed because the TUI gateway calls these
+# per served profile (each profile has its own skills tree / checkout), and the skills walk costs
+# ~6.5s: without the scope key every resume under multiplex re-paid it.
+_available_skills_cache: dict[str, tuple] = {}
+_git_banner_state_cache: dict[str, tuple] = {}
+_latest_release_cache: dict[str, tuple] = {}
+# Keyed (scope, enabled_toolsets) — check_tool_availability probes every toolset's check_fn on a
+# cold TTL (~4.3s measured) and the resume banner calls this once per resume.
+_toolset_availability_cache: dict[tuple, tuple] = {}
 
 _UNCACHED = object()  # compute() result that must not be memoized
 
@@ -107,17 +114,22 @@ _UNCACHED = object()  # compute() result that must not be memoized
 def _memo(cache_name: str, compute):
     """Return the cached value under module global ``cache_name``, computing (and storing) it once.
 
-    Not consulted under a routed profile (HERMES_HOME override): every memo here is derived from the
-    launch home (its skills tree, its checkout), and the TUI gateway calls these per profile."""
+    Scope-keyed per served profile: the TUI gateway calls these with a HERMES_HOME override per
+    served profile, and each profile has its own skills tree / checkout, so a launch-home-only
+    cache would leak one profile's inventory into another. The first call under a profile pays
+    the scan; later ones (every resume under multiplex) read the entry."""
     from hermes_constants import get_hermes_home_override
-    if get_hermes_home_override() is not None:
-        return compute()
-    cached = globals()[cache_name]
+    override = get_hermes_home_override()
+    scope = override if override is not None else "<launch>"
+    caches = globals()[cache_name]
+    if caches is None:  # legacy reset (tests, `hermes skills`): treat as a fresh scope map
+        caches = globals()[cache_name] = {}
+    cached = caches.get(scope)
     if cached is not None:
         return cached[0]
     value = compute()
     if value is not _UNCACHED:
-        globals()[cache_name] = (value,)
+        caches[scope] = (value,)
     return value
 
 
@@ -471,7 +483,16 @@ def compute_toolset_availability(enabled_toolsets: list[str] | None = None) -> d
     """Compute ``{"unavailable_toolsets", "lazy_tools", "disabled_tools"}`` for the banner.
 
     Split out so the result can be snapshotted and replayed without importing ``model_tools``.
+    Per-(scope, toolsets) cached: the probe below walks every toolset's check_fn on a cold TTL
+    (~4.3s measured) and the resume banner calls this once per resume under each served profile.
     """
+    from hermes_constants import get_hermes_home_override
+    override = get_hermes_home_override()
+    scope = override if override is not None else "<launch>"
+    key = (scope, tuple(sorted(enabled_toolsets or [])))
+    cached = _toolset_availability_cache.get(key)
+    if cached is not None:
+        return cached[0]
     from model_tools import check_tool_availability, TOOLSET_REQUIREMENTS
     enabled_toolsets = enabled_toolsets or []
     _, unavailable_toolsets = check_tool_availability(quiet=True)
@@ -489,8 +510,10 @@ def compute_toolset_availability(enabled_toolsets: list[str] | None = None) -> d
     for item in unavailable_toolsets:
         is_lazy = TOOLSET_REQUIREMENTS.get(item.get("name", ""), {}).get("check_fn")
         (lazy_tools if is_lazy else disabled_tools).update(item.get("tools", []))
-    return {"unavailable_toolsets": unavailable_toolsets, "lazy_tools": sorted(lazy_tools),
-            "disabled_tools": sorted(disabled_tools)}
+    result = {"unavailable_toolsets": unavailable_toolsets, "lazy_tools": sorted(lazy_tools),
+              "disabled_tools": sorted(disabled_tools)}
+    _toolset_availability_cache[key] = (result,)
+    return result
 
 
 def _mcp_server_line(srv: dict, *, dim: str, text: str) -> str:

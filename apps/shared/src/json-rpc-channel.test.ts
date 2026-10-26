@@ -172,6 +172,48 @@ describe('JsonRpcRequestChannel', () => {
     }
   })
 
+  it("'any-inbound' liveness defers a silent deadline while heartbeatBusyGuard says work is in flight", async () => {
+    // A renderer viewing session A goes frame-silent while a long turn runs on
+    // session B: the heartbeat must not tear the socket down (same reasoning as
+    // the liveness probe's in-flight-work deferral). Only a silent deadline with
+    // NO work anywhere fails the transport.
+    vi.useFakeTimers()
+
+    try {
+      const failures: string[] = []
+      let busy = true
+
+      const channel = new JsonRpcRequestChannel({
+        heartbeatDeadlineMs: 300,
+        heartbeatIntervalMs: 100,
+        heartbeatLiveness: 'any-inbound',
+        heartbeatBusyGuard: () => busy,
+        onHeartbeatFailure: e => void failures.push(e.message)
+      })
+
+      const { sent, transport } = spyTransport()
+
+      channel.attach(transport)
+      channel.startHeartbeat()
+
+      // Silent current view for 4 deadlines while busy elsewhere: never fails.
+      for (let i = 0; i < 4; i++) {
+        await vi.advanceTimersByTimeAsync(300)
+        expect(failures).toEqual([])
+      }
+
+      expect(sent.filter(f => f.includes('gateway.ping')).length).toBeGreaterThanOrEqual(3)
+
+      // Work elsewhere ends; the same silent deadline is now a dead backend.
+      busy = false
+      await vi.advanceTimersByTimeAsync(300)
+      expect(failures).toHaveLength(1)
+      expect(failures[0]).toContain('heartbeat acknowledgement timed out')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   // Server→client requests (tui_gateway/server_requests.py): the backend asks,
   // the client answers with a RESPONSE frame carrying the same id.
   it('advertises server-request support once per gateway.ready and shrugs off an older backend', () => {

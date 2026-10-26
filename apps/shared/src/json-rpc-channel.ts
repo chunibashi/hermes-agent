@@ -119,6 +119,16 @@ export interface JsonRpcRequestChannelOptions {
   heartbeatIntervalMs?: number
   /** Called when the heartbeat deadline passes or a heartbeat send throws; the owner drops the transport. */
   onHeartbeatFailure?: (error: Error) => void
+  /**
+   * When truthy, a heartbeat deadline is DEFERRED instead of failing the transport.
+   * A live backend that is busy elsewhere — the renderer is viewing session A while
+   * a long turn runs on session B, so its current-view frames go silent — must not
+   * be torn down by its own heartbeat (same reasoning as the liveness probe's
+   * in-flight-work deferral). The owner supplies a check like
+   * `() => workingSessionCount > 0`; the request channel itself cannot see the
+   * backend's work state.
+   */
+  heartbeatBusyGuard?: () => boolean
   /** Decoded `event` notification. */
   onEvent?: (event: GatewayEvent) => void
   /**
@@ -223,6 +233,7 @@ export class JsonRpcRequestChannel {
       desktopLocal: options.desktopLocal ?? (() => false),
       heartbeatDeadlineMs: options.heartbeatDeadlineMs ?? DEFAULT_HEARTBEAT_DEADLINE_MS,
       heartbeatIntervalMs: options.heartbeatIntervalMs ?? DEFAULT_HEARTBEAT_INTERVAL_MS,
+      heartbeatBusyGuard: options.heartbeatBusyGuard ?? (() => false),
       heartbeatLiveness: options.heartbeatLiveness ?? 'response',
       onEvent: options.onEvent,
       onHeartbeatFailure: options.onHeartbeatFailure,
@@ -571,9 +582,15 @@ export class JsonRpcRequestChannel {
       const now = Date.now()
 
       if (lastPingAt > this.lastLivenessAt && now - this.lastLivenessAt >= this.options.heartbeatDeadlineMs) {
-        this.failHeartbeat(new Error('WebSocket heartbeat acknowledgement timed out'))
+        // A silent current view is not a dead backend while ANY session is working
+        // (a turn on another session keeps this socket's frames quiet). Defer the
+        // failure but KEEP pinging so a dead backend is still detected the moment
+        // work ends; a genuinely-dead backend also surfaces via the next RPC.
+        if (!this.options.heartbeatBusyGuard?.()) {
+          this.failHeartbeat(new Error('WebSocket heartbeat acknowledgement timed out'))
 
-        return
+          return
+        }
       }
 
       const id = `heartbeat-${++this.heartbeatSequence}`

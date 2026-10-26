@@ -383,11 +383,12 @@ class SessionAuthority:
         # worker holds the DB (WAL reads don't block), and the deletion re-check stays race-safe.
         def _snapshot_history():
             return tuple(self.unless_deleted(ref, lambda: local_history(self, ref, prepared)))
-        history = await asyncio.to_thread(_snapshot_history)
+        from gateway.session_resume_executor import resume_offload
+        history = await resume_offload(_snapshot_history)
         snapshot = SubscriptionSnapshot(subscription, handle, epoch, sequence, history,
                                     tuple(self._pending_receipt(r) for r in pending_rows(self, ref)), prompts)
         from gateway.session_viewer_close import cancel_persisted_close
-        await asyncio.to_thread(cancel_persisted_close, self, ref.session_id)  # the viewer cancels it
+        await resume_offload(cancel_persisted_close, self, ref.session_id)  # the viewer cancels it
         from gateway.session_deferred_pick import reask_on_attach
         await reask_on_attach(self, ref, live)
         return snapshot

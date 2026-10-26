@@ -528,6 +528,7 @@ export class HermesGateway extends JsonRpcGatewayClient {
       onUnhandledRequest: request =>
         console.warn(`[gateway] Hermes Desktop has no server-request registry for ${request.method} (${request.id})`),
       requestTimeoutMs: DEFAULT_GATEWAY_REQUEST_TIMEOUT_MS,
+      heartbeatBusyGuard: () => heartbeatBusyGuard(),
       socketFactory: openGatewaySocket
     })
     this.onEvent(event => {
@@ -561,6 +562,17 @@ export const $apiRequestScope: MapStore<ApiRequestScope> = map<ApiRequestScope>(
 
 export function setApiRequestProfile(profile: null | string): void {
   $apiRequestScope.setKey('profile', profile || null)
+}
+
+// Heartbeat busy-guard: the request channel cannot see the backend's work state,
+// and a renderer viewing session A goes frame-silent while a long turn runs on
+// session B — a 45s silent current view must not tear the socket down (same
+// reasoning as the liveness probe's in-flight-work deferral). The store pushes
+// `() => workingSessionCount > 0` through this setter to avoid an import cycle.
+let heartbeatBusyGuard: () => boolean = () => false
+
+export function setHeartbeatBusyGuard(guard: () => boolean): void {
+  heartbeatBusyGuard = guard
 }
 
 // An explicit scope (string or object, not `undefined`/`null`) is a user

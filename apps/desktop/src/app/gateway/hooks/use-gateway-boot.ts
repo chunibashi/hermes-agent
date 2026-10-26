@@ -14,7 +14,7 @@ import { createGatewayEventDedupe } from '@/app/gateway/gateway-event-dedupe'
 import { reportStartupLatency } from '@/app/gateway/report-startup-latency'
 import { shouldApplyPostBootProgressError } from '@/components/boot-failure-reauth'
 import type { DesktopBootProgress, HermesConnection, HermesWindowState } from '@/global'
-import { HermesGateway } from '@/hermes'
+import { HermesGateway, setHeartbeatBusyGuard } from '@/hermes'
 import { translateNow } from '@/i18n'
 import { desktopDefaultCwd } from '@/lib/desktop-fs'
 import {
@@ -110,6 +110,13 @@ import { stashGatewaySurvivor, survivorIsStale, takeGatewaySurvivor } from './ga
 import { notifyPrimaryReauth } from './primary-reauth-notice'
 import { useConnectionsRegistry } from './use-connections-registry'
 import { useDefaultProfilePreference } from './use-default-profile-preference'
+
+// Any session working anywhere keeps this window's socket: a renderer viewing
+// session A goes frame-silent while a long turn runs on session B, and a 45s
+// silent current view must not tear the transport down (the heartbeat's
+// any-inbound liveness only sees this window's own frames). Module-level: the
+// guard closure reads the live atom, so this registers once per window.
+setHeartbeatBusyGuard(() => $workingSessionIds.get().length > 0)
 
 // After the reconnect loop has been failing for this long, raise a NON-blocking
 // warning toast. Full-screen BootFailureOverlay used to lock the user out of

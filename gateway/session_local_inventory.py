@@ -202,7 +202,8 @@ async def snapshot_info(authority, ref):
     info = local_session_info(authority, ref)
     policy = policy_for_source(authority.runner, authority.sessions[ref.session_id].source)
     agent = authority.agent(ref)
-    inventory = await asyncio.to_thread(session_inventory, authority, policy, agent, info.get("cwd"))
+    from gateway.session_resume_executor import resume_offload
+    inventory = await resume_offload(session_inventory, authority, policy, agent, info.get("cwd"))
     if info.get('tool_count') is None:
         # A lazy session: the tools its first turn loads (the banner's own count).
         info['tool_count'] = sum(len(names) for names in (inventory.get('tools') or {}).values())

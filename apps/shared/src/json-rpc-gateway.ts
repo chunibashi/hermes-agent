@@ -22,6 +22,13 @@ export interface GatewayClientOptions {
   createRequestId?: (nextId: number) => GatewayRequestId
   heartbeatDeadlineMs?: number
   heartbeatIntervalMs?: number
+  /**
+   * When truthy at a heartbeat deadline, defer the failure instead of dropping
+   * the transport (the renderer is viewing session A while a long turn runs on
+   * session B, so its current-view frames stay silent — see the liveness probe's
+   * in-flight-work deferral). The desktop supplies `() => $workingSessionIds… > 0`.
+   */
+  heartbeatBusyGuard?: () => boolean
   /** A server→client request handler threw; the channel already answered `-32603`. */
   onRequestHandlerError?: JsonRpcRequestChannelOptions['onRequestHandlerError']
   /** No handler accepted a server→client request; the channel already answered `-32601`. */
@@ -184,6 +191,7 @@ export class JsonRpcGatewayClient {
       createRequestId: options.createRequestId ?? ((nextId: number) => `${options.requestIdPrefix ?? 'r'}${nextId}`),
       heartbeatDeadlineMs: options.heartbeatDeadlineMs ?? DEFAULT_HEARTBEAT_DEADLINE_MS,
       heartbeatIntervalMs: options.heartbeatIntervalMs ?? DEFAULT_HEARTBEAT_INTERVAL_MS,
+      heartbeatBusyGuard: options.heartbeatBusyGuard ?? (() => false),
       notConnectedErrorMessage: options.notConnectedErrorMessage ?? 'gateway not connected',
       onSocketClose: options.onSocketClose ?? (() => false),
       replay: options.replay ?? true,
@@ -198,6 +206,7 @@ export class JsonRpcGatewayClient {
       desktopLocal: () => this.isDesktopLocal(),
       heartbeatDeadlineMs: this.options.heartbeatDeadlineMs,
       heartbeatIntervalMs: this.options.heartbeatIntervalMs,
+      heartbeatBusyGuard: this.options.heartbeatBusyGuard,
       // Desktop/web and the TUI alike count any inbound frame as liveness
       // (#115251): streamed deltas are life; only a silent drop trips the
       // deadline.

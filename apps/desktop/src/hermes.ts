@@ -14,6 +14,7 @@ export {
   resolveOwnerNow,
   setApiRequestConnection,
   setApiRequestProfile,
+  setHeartbeatBusyGuard,
   STARTUP_REQUEST_TIMEOUT_MS
 } from './api/client'
 export type { ProfileScope, ResolvedOwner } from './api/client'

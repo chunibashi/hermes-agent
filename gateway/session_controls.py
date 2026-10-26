@@ -628,7 +628,8 @@ class AuthorityConnection:
         source = self.authority.sessions[snapshot.handle.ref.session_id].source
         if source is not None and source.platform == Platform.LOCAL:
             from gateway.session_policy import policy_for_source, refresh_profile_hooks
-            await asyncio.to_thread(refresh_profile_hooks, policy_for_source(self.authority.runner, source))
+            from gateway.session_resume_executor import resume_offload
+            await resume_offload(refresh_profile_hooks, policy_for_source(self.authority.runner, source))
             info = await snapshot_info(self.authority, snapshot.handle.ref)
         from gateway.session_connections import pending_connection
         from gateway.session_server_requests import open_requests
@@ -641,9 +642,10 @@ class AuthorityConnection:
         # seconds and clarify.respond / session.interrupt timed out. Offload both to workers.
         if params.get('display_projection'):
             # A micro-compaction merge stays in ``messages`` (an undo target); its originals are what shows.
-            display['display_messages'] = await asyncio.to_thread(
+            from gateway.session_resume_executor import resume_offload
+            display['display_messages'] = await resume_offload(
                 display_projection, [row for row in history if not model_only(row)], self.authority.profile_id)
-        todo_state = await asyncio.to_thread(_todo_state_from_history, history)
+        todo_state = await resume_offload(_todo_state_from_history, history)
         return {'session_id': ref.session_id, 'stored_session_id': ref.session_id,
                 'messages': history, **display, 'message_count': len(history),
                 'running': snapshot.handle.execution_state == 'running',
