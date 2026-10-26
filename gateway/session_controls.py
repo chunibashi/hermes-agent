@@ -563,6 +563,7 @@ class AuthorityConnection:
 
     async def resume(self, ref, params):
         from gateway.session_local_inventory import snapshot_info
+        from gateway.session_resume_executor import resume_offload
         if 'latest' in params:
             # Bare `-c` / `--resume latest`: the most recent session of that surface family the
             # actor may read (workspace first), resolved by the owner like a title.
@@ -628,7 +629,6 @@ class AuthorityConnection:
         source = self.authority.sessions[snapshot.handle.ref.session_id].source
         if source is not None and source.platform == Platform.LOCAL:
             from gateway.session_policy import policy_for_source, refresh_profile_hooks
-            from gateway.session_resume_executor import resume_offload
             await resume_offload(refresh_profile_hooks, policy_for_source(self.authority.runner, source))
             info = await snapshot_info(self.authority, snapshot.handle.ref)
         from gateway.session_connections import pending_connection
@@ -642,7 +642,6 @@ class AuthorityConnection:
         # seconds and clarify.respond / session.interrupt timed out. Offload both to workers.
         if params.get('display_projection'):
             # A micro-compaction merge stays in ``messages`` (an undo target); its originals are what shows.
-            from gateway.session_resume_executor import resume_offload
             display['display_messages'] = await resume_offload(
                 display_projection, [row for row in history if not model_only(row)], self.authority.profile_id)
         todo_state = await resume_offload(_todo_state_from_history, history)

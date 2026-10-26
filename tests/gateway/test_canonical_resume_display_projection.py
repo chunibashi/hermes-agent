@@ -79,3 +79,28 @@ async def test_resume_without_projection_is_unchanged(tmp_path, monkeypatch):
     reply = await native.dispatch({'id': 1, 'method': 'session.resume', 'params': {'session_id': 'old-tui'}})
     assert 'result' in reply, reply
     assert 'display_messages' not in reply['result']
+
+
+@pytest.mark.asyncio
+async def test_resume_messaging_session_without_projection(tmp_path, monkeypatch):
+    """A non-LOCAL (platform) session resume without ``display_projection`` must not crash.
+
+    Regression: 6412c39857 moved the ``resume_offload`` import inside the
+    ``source.platform == LOCAL`` and ``display_projection`` branches, but the
+    ``todo_state`` call runs unconditionally — so a platform session (``telegram``),
+    which skips the LOCAL branch, hit ``UnboundLocalError: cannot access local
+    variable 'resume_offload'`` the moment the client did not ask for a projection.
+    The import must be bound before any unconditional use.
+    """
+    db, native = await _native(tmp_path, monkeypatch)
+    db.create_session('tg-1', source='telegram')
+    db.append_message('tg-1', 'user', 'hello')
+    db.append_message('tg-1', 'assistant', 'hi there')
+    db.end_session('tg-1', 'agent_close')
+
+    reply = await native.dispatch({'id': 1, 'method': 'session.resume', 'params': {'session_id': 'tg-1'}})
+    assert 'result' in reply, reply
+    result = reply['result']
+    assert 'display_messages' not in result
+    # The todo projection is computed for any resume; it must be present, not crash.
+    assert result['message_count'] == 2
