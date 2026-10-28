@@ -107,3 +107,77 @@ def test_pause_client_none_when_gateway_lacks_verb(tmp_path):
 
 def test_pause_client_none_when_no_socket(tmp_path):
     assert pause_gateway_for_update(tmp_path, timeout=0.5) is None
+
+
+def test_pause_verb_forwards_immediate_param_to_handler(tmp_path):
+    """``pause_gateway_for_update(immediate=True)`` must reach the handler as
+    ``params={"immediate": True}`` — the gateway zeroes its own after-turn wait
+    cap on the loop, so a caller in a DIFFERENT process gets an immediate
+    restart too (2026-10-28: a sibling probe's request fell back to the 1800s
+    after-turn wait because the zeroing lived in the caller's process)."""
+    seen: list[dict | None] = []
+
+    def handler(params=None):
+        seen.append(params)
+        return {"pausing": True, "already_stopping": False, "pid": 222,
+                "drain_timeout": 0.0, "immediate": bool((params or {}).get("immediate"))}
+
+    server = _make_server(tmp_path, handler)
+    raw = json.dumps({
+        "verb": "pause-for-update", "id": 9,
+        "params": {"immediate": True},
+    }).encode()
+    response = json.loads(server.handle_request_line(raw).decode())
+    assert response["ok"] is True
+    assert response["result"]["immediate"] is True
+    assert seen == [{"immediate": True}]
+
+
+def test_pause_verb_immediate_false_without_params(tmp_path):
+    """A plain pause (no params) still invokes the handler with an empty dict —
+    the default restart path is unchanged."""
+    seen: list[dict | None] = []
+
+    def handler(params=None):
+        seen.append(params)
+        return {"pausing": True, "already_stopping": False, "pid": 333,
+                "drain_timeout": 30.0, "immediate": False}
+
+    server = _make_server(tmp_path, handler)
+    raw = json.dumps({"verb": "pause-for-update", "id": 10}).encode()
+    response = json.loads(server.handle_request_line(raw).decode())
+    assert response["ok"] is True
+    assert response["result"]["immediate"] is False
+    assert seen == [{}]
+
+
+@pytest.mark.platforms("posix")  # unix socket transport
+def test_pause_client_immediate_roundtrip_over_real_socket(tmp_path):
+    """Client → socket → handler: immediate=True travels in params and the ACK
+    carries it back (the plugin reads the ACK after the restart is accepted)."""
+
+    async def scenario():
+        seen: list[dict | None] = []
+
+        def handler(params=None):
+            seen.append(params)
+            return {"pausing": True, "already_stopping": False,
+                    "pid": 5555, "drain_timeout": 0.0,
+                    "immediate": bool((params or {}).get("immediate"))}
+
+        server = _make_server(tmp_path, handler)
+        assert await server.start()
+        try:
+            loop = asyncio.get_running_loop()
+            result = await loop.run_in_executor(
+                None, lambda: pause_gateway_for_update(
+                    tmp_path, timeout=5.0, immediate=True)
+            )
+        finally:
+            await server.stop()
+        return result, seen
+
+    result, seen = asyncio.run(scenario())
+    assert seen == [{"immediate": True}]
+    assert result is not None
+    assert result["immediate"] is True and result["drain_timeout"] == 0.0

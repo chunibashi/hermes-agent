@@ -314,7 +314,15 @@ async def _start_gateway_start_control_socket(runner):
         # manager) relaunches after the code swap.
         _main_loop = asyncio.get_running_loop()
 
-        def _pause_for_update_handler() -> dict:
+        def _pause_for_update_handler(params: dict | None = None) -> dict:
+            # ``immediate: true`` asks for a restart that does NOT wait for active
+            # turns to finish: the requester (e.g. the gateway-lifecycle-guard
+            # plugin) has its own recovery contract and wants the kill NOW.
+            # The after-turn wait is owned by this process (run_shutdown.py), so
+            # zeroing the cap here — ON the loop, before request_restart reads it —
+            # is the only reliable place; a caller-side runner hack only works when
+            # caller and gateway share a process.
+            immediate = bool((params or {}).get("immediate"))
             try:
                 from hermes_cli.gateway import _get_restart_drain_timeout
                 _drain = float(_get_restart_drain_timeout())
@@ -325,6 +333,11 @@ async def _start_gateway_start_control_socket(runner):
 
             def _request() -> None:
                 try:
+                    if immediate:
+                        try:
+                            runner._restart_after_turn_timeout = 0.0
+                        except Exception:
+                            pass
                     accepted_box.append(runner.request_restart(detached=False, via_service=True))
                 finally:
                     _done.set()
@@ -334,7 +347,8 @@ async def _start_gateway_start_control_socket(runner):
             accepted = bool(accepted_box and accepted_box[0])
             return {
                 "pausing": accepted, "already_stopping": not accepted,
-                "pid": os.getpid(), "drain_timeout": _drain}
+                "pid": os.getpid(), "drain_timeout": _drain,
+                "immediate": immediate}
 
         def _rescan_profiles_handler() -> dict:
             """``hermes profile create/delete`` asks the multiplexer to reconcile ``profiles/`` now
