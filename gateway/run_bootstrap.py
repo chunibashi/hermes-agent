@@ -338,6 +338,15 @@ async def _start_gateway_start_control_socket(runner):
                             runner._restart_after_turn_timeout = 0.0
                         except Exception:
                             pass
+                        # Zeroing only the after-turn cap still left stop() draining
+                        # for the configured window (``effective_stop_drain_timeout``
+                        # reads ``_restart_drain_timeout``, default 180s here): a
+                        # "restart now" then sat waiting on in-flight work, which is
+                        # exactly what this argument exists to prevent.
+                        try:
+                            runner._restart_drain_timeout = 0.0
+                        except Exception:
+                            pass
                     accepted_box.append(runner.request_restart(detached=False, via_service=True))
                 finally:
                     _done.set()
@@ -347,7 +356,8 @@ async def _start_gateway_start_control_socket(runner):
             accepted = bool(accepted_box and accepted_box[0])
             return {
                 "pausing": accepted, "already_stopping": not accepted,
-                "pid": os.getpid(), "drain_timeout": _drain,
+                "pid": os.getpid(),
+                "drain_timeout": 0.0 if immediate and accepted else _drain,
                 "immediate": immediate}
 
         def _rescan_profiles_handler() -> dict:
