@@ -2,7 +2,7 @@ import { randomUuid, SLASH_COMMAND_RE } from '@hermes/shared'
 import { type RefObject, useLayoutEffect, useRef } from 'react'
 
 import { usePaneVisible } from '@/components/pane-shell/pane-visibility'
-import { translateNow } from '@/i18n'
+import { translateNow, useI18n } from '@/i18n'
 import { isSlashCommandText } from '@/lib/chat-runtime'
 import { isSideTaskSlashCommand } from '@/lib/desktop-slash-commands'
 import { triggerHaptic } from '@/lib/haptics'
@@ -120,6 +120,7 @@ export function useComposerSubmit({
   const paneVisible = usePaneVisible()
   const scope = useComposerScope()
   const surfaceId = useComposerSurfaceId()
+  const { t } = useI18n()
 
   // Shared send primitive: fire onSubmit, and if the gateway rejects (accepted
   // === false) or throws, re-stash the draft so the words survive. Repaint it
@@ -427,7 +428,7 @@ export function useComposerSubmit({
       return false
     }
 
-  notify({
+    notify({
       id: 'onboarding-slash-off',
       kind: 'info',
       message: t.firstRun.slashOffBody,
