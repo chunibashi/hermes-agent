@@ -841,7 +841,7 @@ class GatewayStartupMixin:
             return False
 
     async def _sweep_startup_unknown_admissions(self) -> None:
-        """Auto-settle every local session's orphaned admissions and wake the ones a restart
+        """Auto-settle every session's orphaned admissions and wake the local ones a restart
         actually interrupted, so the AI speaks again on boot without a user ping.
 
         Two failure shapes land here, and both were seen on live watchdog restarts:
@@ -881,9 +881,14 @@ class GatewayStartupMixin:
                         "Restart recovery: pre-sweep started->unknown pass failed for %s: %s",
                         authority.profile_id, exc)
                 try:
+                    # EVERY live session, not only ``source='local'``: a restart cuts a
+                    # Telegram/QQ turn exactly like a desktop one, and one unsettled
+                    # ``unknown`` row pauses THAT chat's FIFO just the same. Scanning
+                    # local-only left platform lanes blocked behind a red card the user
+                    # had to Discard by hand.
                     rows = authority.db._read_all(
-                        "SELECT id, session_key, last_activity_at FROM sessions "
-                        "WHERE source='local' AND ended_at IS NULL") or []
+                        "SELECT id, session_key, last_activity_at, source FROM sessions "
+                        "WHERE ended_at IS NULL") or []
                 except Exception as exc:
                     logger.debug("Unknown-sweep session scan failed for %s: %s", authority.profile_id, exc)
                     continue
@@ -893,10 +898,10 @@ class GatewayStartupMixin:
                     # blocks the chat until the user clicks Discard). Isolate each session;
                     # the failure is logged, the sweep moves on.
                     try:
-                        await self._sweep_one_local_session(authority, row, freshness)
+                        await self._sweep_one_session_admissions(authority, row, freshness)
                     except Exception as exc:
                         logger.warning(
-                            "Restart recovery: sweep failed for local session %s: %s",
+                            "Restart recovery: sweep failed for session %s: %s",
                             row.get("session_key", row.get("id")), exc)
         except Exception as exc:
             # Was debug: a sweep that raises leaves stale ``unknown`` rows behind, and the
@@ -904,9 +909,13 @@ class GatewayStartupMixin:
             # click before the chat can continue. That failure must be visible in the log.
             logger.warning("Restart recovery unknown-sweep failed: %s", exc)
 
-    async def _sweep_one_local_session(self, authority, row, freshness) -> None:
-        """Sweep one local session's orphaned admissions: settle every ``unknown`` turn and
-        wake the session if a restart cut its most recent turn (no completed turn after it).
+    async def _sweep_one_session_admissions(self, authority, row, freshness) -> None:
+        """Sweep one session's orphaned admissions: settle every ``unknown`` turn and wake
+        the session if a restart cut its most recent turn (no completed turn after it).
+
+        Applies to EVERY source: a cut turn blocks its own chat's FIFO whether it arrived
+        from the desktop, Telegram or QQ, and an update restarts the gateway regardless of
+        which lane was mid-turn — so both the settle AND the wake are source-independent.
 
         Isolated per session so a single bad row cannot abort the sweep for the rest
         (2026-10-21: an exception here skipped every later session, leaving its
@@ -942,6 +951,11 @@ class GatewayStartupMixin:
         # the most recent ``unknown`` (crash) or ``interrupted`` (watchdog
         # planned-stop) with no ``completed`` turn after it. A completed turn after
         # the cut means the user already continued the conversation — no wake.
+        #
+        # EVERY source is woken, platform lanes included. An update restarts the
+        # gateway whether or not a Telegram/QQ chat is waiting, so leaving those lanes
+        # unwoken strands the user's message until they ping again by hand — the same
+        # dead stop the local wake exists to prevent.
         if not (
             freshness <= 0
             or (row["last_activity_at"]
