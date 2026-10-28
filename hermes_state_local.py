@@ -36,9 +36,25 @@ def routing_scope_for(db) -> str:
 
 def routing_scope_for_conn(conn) -> str:
     """Same namespace, resolved from a bare connection (no ``db`` handle in scope): the scope the
-    live index already uses. Empty when nothing has been written yet, which is also when the
-    legacy namespace is empty and the check cannot misfire."""
+    live index already uses.
+
+    Derived from this connection's own database file, never from "first non-empty routing row":
+    ``gateway_routing`` legitimately holds several scopes at once (legacy ``scope=''`` rows, plus a
+    store an embedded/simulated environment wrote under its own sessions dir). A ``LIMIT 1`` guess
+    then answers with a scope THIS database never routes, so ``advance_local_target`` and
+    ``_commit_local_target`` look up their own route under a foreign namespace, get ``None``, and
+    fail every compression rotation with ``admission_conflict`` — the context never compacts and the
+    session wedges against its model's window. Empty when nothing has been written yet, which is
+    also when the legacy namespace is empty and the check cannot misfire."""
     try:
+        for row in conn.execute("PRAGMA database_list").fetchall():
+            if len(row) >= 3 and row[1] == "main" and row[2]:
+                from pathlib import Path
+                return str((Path(row[2]).parent / "sessions").resolve())
+    except Exception:
+        pass
+    try:
+        # In-memory store: no file to derive from, and a fresh :memory: db holds one namespace only.
         row = conn.execute("SELECT scope FROM gateway_routing WHERE scope != '' LIMIT 1").fetchone()
         if row is not None:
             return row[0]
