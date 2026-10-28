@@ -600,8 +600,9 @@ class AuthorityConnection:
             # The TUI exit hint abbreviates canonical local IDs to ``local-`` plus 16 hex
             # characters. Resolve only that family before authorization so a unique hint reaches
             # the same durable local route as its full ID; ambiguous and missing prefixes retain
-            # the normal not_found result.
-            if re.fullmatch(r'local-[0-9a-f]{16}', ref.session_id):
+            # the normal not_found result.  (16,64 covers both the 16-hex TUI hint and the 44-hex
+            # truncated owner IDs the Desktop stores for local sessions.)
+            if re.fullmatch(r'local-[0-9a-f]{16,64}', ref.session_id):
                 resolved_id = self.authority.db.resolve_session_id(ref.session_id)
                 if resolved_id is not None:
                     ref = SessionRef(ref.profile_id, resolved_id)
