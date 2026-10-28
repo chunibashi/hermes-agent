@@ -91,6 +91,10 @@ class LiveSession:
     # Revision of the last ``session.control.update`` (gateway/session_control_actions.publish): a tool
     # completion republishes only when a tool actually moved the goal/loop/heartbeat state.
     control_revision: str = ""
+    # Tickets ordering control publishes whose snapshot is read off the loop: the last one scheduled
+    # wins, so a slow read cannot land over a newer state (gateway/session_control_actions.publish).
+    control_seq: int = 0
+    control_published_seq: int = 0
 
     def __post_init__(self):
         self.controls = PendingControls(self.event_stream)
@@ -347,10 +351,14 @@ class SessionAuthority:
                 raise RuntimeStoreError('not_found') from None
             raise
 
-    async def attach(self, actor, ref):
+    async def attach(self, actor, ref, *, history=True):
+        """Join *ref*'s event stream and snapshot it. ``history=False``: the snapshot carries no transcript
+        (``history == ()``), only the physical ``transcript_target``, so the display-row lineage read is
+        skipped; for a viewer that pages the transcript itself (Desktop over REST)."""
         self.authorize(actor, ref, 'session:read')
-        from gateway.session_local_recovery import local_history, prepare_history
-        prepared = await prepare_history(self, ref)  # the lineage read stays off the loop and the lock
+        from gateway.session_local_recovery import local_history, prepare_history, transcript_target
+        # The lineage read stays off the loop and the lock; without history the target is resolved under it.
+        prepared = await prepare_history(self, ref) if history else None
         from gateway.session_onboarding import keep_from_discard
         # The last await before the viewer joins: a fresh launch's claim is taken back with no yield
         # before the join, and a delete already past it answers not_found below.
@@ -376,19 +384,15 @@ class SessionAuthority:
             active_generation = handle.execution_generation if handle.execution_state == "running" else None
             prompts = live.controls.snapshot(ref.session_id, active_generation)
             epoch, sequence = live.event_stream.watermark()
-        # local_history is the resume hot path: a whole-transcript DB read + display projection that
-        # previously ran synchronously on the owner loop (and under the stream lock), freezing the WS
-        # reader for hundreds of ms per resume so clarify.respond / session.interrupt never arrived
-        # and the client timed out at 30s. Read it off the loop; the loop keeps turning while the
-        # worker holds the DB (WAL reads don't block), and the deletion re-check stays race-safe.
-        def _snapshot_history():
-            return tuple(self.unless_deleted(ref, lambda: local_history(self, ref, prepared)))
-        from gateway.session_resume_executor import resume_offload
-        history = await resume_offload(_snapshot_history)
-        snapshot = SubscriptionSnapshot(subscription, handle, epoch, sequence, history,
-                                    tuple(self._pending_receipt(r) for r in pending_rows(self, ref)), prompts)
+            if history:
+                history, target = self.unless_deleted(ref, lambda: tuple(local_history(self, ref, prepared))), None
+            else:
+                history, target = (), self.unless_deleted(ref, lambda: transcript_target(self, ref))
+            snapshot = SubscriptionSnapshot(subscription, handle, epoch, sequence, history,
+                                        tuple(self._pending_receipt(r) for r in pending_rows(self, ref)), prompts,
+                                        transcript_target=target)
         from gateway.session_viewer_close import cancel_persisted_close
-        await resume_offload(cancel_persisted_close, self, ref.session_id)  # the viewer cancels it
+        await asyncio.to_thread(cancel_persisted_close, self, ref.session_id)  # the viewer cancels it
         from gateway.session_deferred_pick import reask_on_attach
         await reask_on_attach(self, ref, live)
         return snapshot
@@ -667,7 +671,8 @@ class SessionAuthority:
                 if sid not in self.sessions:  # ``mount``: a moved local chat keeps ``handed_off`` here too
                     from gateway.session_route_recovery import mount
                     self.sessions[sid] = mount(self, sid, source, route)
-                # Rows lost to a crash (status 'unknown') never block new submissions.
+                if any(row['status'] == 'unknown' for row in rows):
+                    raise RuntimeStoreError('unknown_execution')
                 self._schedule(SessionRef(self.profile_id, sid))
                 results[sid] = 'ready'
             except RuntimeStoreError as exc:
@@ -1049,8 +1054,8 @@ class SessionAuthority:
         # False asks the pump to re-read after a queued head changed during preflight.
         async with live.claim_gate, live.mutation_lock:
             pending = list_session_admissions(self.db, session_id=ref.session_id)
-            # Skip rows lost to a crash (status 'unknown'); they stay in the DB for audit
-            # but never block newer messages behind them.
+            if any(row['status'] == 'unknown' for row in pending):
+                raise RuntimeStoreError('unknown_execution')
             first = next((row for row in pending if row['status'] == 'queued'), None)
             from gateway.config import Platform
             if live.source.platform == Platform.LOCAL:
