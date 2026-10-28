@@ -41,6 +41,9 @@ const COMPARED_FIELDS = [
   'interim',
   'interrupted',
   'reactions',
+  // The row that carries THIS message's reactions — a local enhancement: the
+  // reaction strip repaints from it, so it is compared, not ignored.
+  'reactionRowId',
   'timestamp',
   'completedAt',
   // Turn wall-clock duration — stamps the visible "⏱ 38s" badge, so a change
