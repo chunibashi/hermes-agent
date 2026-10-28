@@ -16,8 +16,17 @@ if TYPE_CHECKING:
 # Total startup deadline a client waits for a cold daemon. A cold boot imports the whole
 # runtime, seeds the skill library and warms the turn machinery: ~10-20 s on a loaded
 # 32-core CI runner with dozens of sibling boots, where 30 s tipped every attaching client
-# of a parallel e2e shard into `starting: deadline`. A minute is still a verdict, not a hang.
-DEFAULT_ENSURE_TIMEOUT = 60.0
+# of a parallel e2e shard into `starting: deadline`.
+#
+# A MULTIPLEX gateway boots far slower than that single-profile figure: each served profile
+# seeds its own runtime and every enabled adapter dials a real network (2026-10-29: default +
+# 2 profiles with telegram/qqbot/weixin/discord/webhook reached ready 118 s after the stop,
+# while the desktop waited only this deadline and booted into `gateway ensure timed out
+# (exit 7)`). That verdict is worse than a slower wait — the app falls back to a stale
+# endpoint and every following `session.resume` lands nowhere (30 s each, retried until the
+# user reloads). Polling returns the moment the owner answers, so a healthy gateway never
+# pays this; only the genuinely-still-starting case waits longer than before.
+DEFAULT_ENSURE_TIMEOUT = 180.0
 
 
 @dataclass(frozen=True)
