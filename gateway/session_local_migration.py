@@ -73,6 +73,40 @@ def resolve_local_target(authority, actor, sid):
     return adopt_legacy_session(authority, actor, row)
 
 
+def local_identity_for(authority, sid):
+    """The conversation identity that owns *sid* when *sid* is a rotated local transcript, else *sid*.
+
+    A compression or reset rotation stores the conversation's new segment under a fresh row while its
+    receipt stays keyed by the conversation's creation id (``local-<hash>``, or the historical id an
+    adopted pre-gateway chat keeps — the row's ``chat_id``). Every RPC that arrives with the transcript
+    id instead — a Desktop tile remembers the id it last opened — then reads a receipt that is not
+    there: ``local_receipt`` raises ``storage_unavailable`` for the rest of the conversation's life, so
+    the restore refuses, the handler runs on an id nothing published, and the client retries the open
+    until its request deadline expires. The same ladder as :func:`resolve_local_target`, read-only: an
+    id whose own receipt is the one stored under it is already the identity, and a ``chat_id`` that is
+    not backed by a receipt or not the row's lineage owner proves nothing and is left alone.
+    """
+    from hermes_state_local import POLICY_PREFIX, local_lineage_owner
+    from hermes_state_local_migration import LEGACY_LOCAL_SOURCES, LEGACY_PREFIX
+    row = authority.db.get_session(sid) if sid else None
+    if row is None or row.get('source') not in LEGACY_LOCAL_SOURCES | {Platform.LOCAL.value}:
+        return sid
+    chat_id = str(row.get('chat_id') or '')
+    if not chat_id or chat_id == sid:
+        return sid
+    with authority.db._read_ctx() as conn:
+        def bound(identity):
+            return conn.execute('SELECT 1 FROM state_meta WHERE key IN (?,?)',
+                                (POLICY_PREFIX + identity, LEGACY_PREFIX + identity)).fetchone()
+        if bound(sid):
+            return sid  # the receipt is this row's own: it IS the logical owner
+        if not bound(chat_id):
+            return sid  # no identity receipt either: nothing to re-address
+        if local_lineage_owner(conn, sid) != chat_id:
+            return sid  # a copied chat_id is not evidence that this row belongs to its lineage
+    return chat_id
+
+
 def legacy_launch_params(row):
     """``(create params, api_mode)`` a legacy row resumes on.
 

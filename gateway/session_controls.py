@@ -300,6 +300,17 @@ class AuthorityConnection:
             if method in _PROFILE_IMPLICIT:
                 params = {key: value for key, value in params.items() if key != 'profile'}
         ref = SessionRef(self.actor.profile_id, params.get('session_id', ''))
+        # A rotated local transcript (a compression / reset segment) is addressed by its conversation's
+        # identity: the receipt is keyed there, and that is the id a restore publishes. An RPC carrying
+        # the segment id would read a receipt that is not there and refuse `storage_unavailable` for the
+        # rest of the conversation's life, so re-address the request once here and let every handler
+        # below work on the id the owner actually serves.
+        if isinstance(ref.session_id, str) and ref.session_id and not ref.session_id.startswith('local-'):
+            from gateway.session_local_migration import local_identity_for
+            identity = local_identity_for(self.authority, ref.session_id)
+            if identity != ref.session_id:
+                ref = SessionRef(ref.profile_id, identity)
+                params = {**params, 'session_id': identity}
         from tui_gateway.contracts.registry import (
             CANONICAL_METHODS, METHODS, canonical_param_problems, check_params_accepted, check_result,
             unknown_method_message,

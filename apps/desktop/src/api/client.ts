@@ -24,6 +24,35 @@ import { CanonicalDesktopProtocol, canonicalProfile, canonicalPromptParams, cano
 // keep the short default so a genuinely-dead backend is still detected fast.
 export const STARTUP_REQUEST_TIMEOUT_MS = 60_000
 const DEFAULT_GATEWAY_REQUEST_TIMEOUT_MS = 30_000
+// The blanket 30s is right for a read that must answer now (liveness, listing, config), but wrong for
+// the RPCs whose backend work is a whole stored transcript or a receipt commit. `session.resume`
+// projects the session's history and policy in one reply — measured 1-9s on an ordinary local
+// conversation, more while a compaction or a second chat holds the store — and `session.create`,
+// `session.context_breakdown` and `session.mutate` do the same class of work. The desktop's 30s
+// deadline therefore expired on a healthy backend about to answer, which surfaced as the recurring
+// "request timed out after 30s: session.resume" and left the open retried from scratch. The shared
+// channel's own default (`JsonRpcGatewayClient` requestTimeoutMs) is 120s: this restores that budget
+// where the work is known to be long, and leaves every other method at 30s.
+const SLOW_READ_REQUEST_TIMEOUT_MS = 120_000
+// Control RPCs are answered immediately by a healthy backend (they never wait for the turn), so their
+// deadline only bounds a blocked one — long enough to survive the queue behind a slow read, short
+// enough that "stopping…" still ends in a visible failure.
+const CONTROL_REQUEST_TIMEOUT_MS = 60_000
+
+const METHOD_REQUEST_TIMEOUT_MS: Record<string, number> = {
+  'clarify.respond': CONTROL_REQUEST_TIMEOUT_MS,
+  'message.react': CONTROL_REQUEST_TIMEOUT_MS,
+  'prompt.cancel': CONTROL_REQUEST_TIMEOUT_MS,
+  'session.interrupt': CONTROL_REQUEST_TIMEOUT_MS,
+  'session.redirect': CONTROL_REQUEST_TIMEOUT_MS,
+  'session.steer': CONTROL_REQUEST_TIMEOUT_MS,
+  'session.context_breakdown': SLOW_READ_REQUEST_TIMEOUT_MS,
+  'session.create': SLOW_READ_REQUEST_TIMEOUT_MS,
+  'session.events.since': SLOW_READ_REQUEST_TIMEOUT_MS,
+  'session.mutate': SLOW_READ_REQUEST_TIMEOUT_MS,
+  'session.resume': SLOW_READ_REQUEST_TIMEOUT_MS
+}
+
 // prompt.submit is effectively fire-and-forget: turn completion is signaled by
 // stream / message.complete events, NOT by the RPC return. A long turn (MoA
 // presets running references + aggregator in series, deep reasoning, large tool
@@ -80,8 +109,9 @@ function legacyParams(method: string, params: Record<string, unknown>): Record<s
 
 // A caller timeout of 0 (or less) means no deadline, as in the shared channel, which arms no timer
 // for it. Callers that wait on a way-out offer instead (onboarding.state / onboarding.start) pass 0.
-function requestDeadline(timeoutMs: number | undefined): number {
-  const budget = timeoutMs ?? DEFAULT_GATEWAY_REQUEST_TIMEOUT_MS
+// An explicit caller budget always wins, down to the follow-up calls that spend its remainder.
+function requestDeadline(timeoutMs: number | undefined, method: string): number {
+  const budget = timeoutMs ?? METHOD_REQUEST_TIMEOUT_MS[method] ?? DEFAULT_GATEWAY_REQUEST_TIMEOUT_MS
 
   return budget > 0 ? Date.now() + budget : Number.POSITIVE_INFINITY
 }
@@ -390,7 +420,7 @@ export class HermesGateway extends JsonRpcGatewayClient {
   override async request<T>(method: string, params: Record<string, unknown> = {}, timeoutMs?: number, signal?: AbortSignal): Promise<T> {
     if (!this.canonical) { return super.request<T>(method, legacyParams(method, params), timeoutMs, signal) }
     const generation = this.connectionGeneration
-    const deadline = requestDeadline(timeoutMs)
+    const deadline = requestDeadline(timeoutMs, method)
     // A truncating submit (edit / regenerate / restore) is the owner's rewind, then the submit.
     const rewind = method === 'prompt.submit' ? splitRewindSubmit(params) : null
 
