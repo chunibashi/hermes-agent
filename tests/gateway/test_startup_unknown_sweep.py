@@ -145,6 +145,81 @@ async def test_scan_lists_every_live_session(monkeypatch):
 
     sql = " ".join(captured.get("sql", "").split()).lower()
     assert sql, "sweep must scan sessions"
-    assert "source='local'" not in sql.replace(" ", ""), (
-        "local-only scan leaves platform lanes blocked behind an unknown row: " + sql)
     assert "ended_at is null" in sql
+    where = sql.split("where", 1)[-1]
+    assert "source" not in where, (
+        "a source predicate in the WHERE clause re-creates the platform dead stop: " + sql)
+
+
+# --- one restart, one 「[系统恢复]」 ------------------------------------------------
+#
+# Two independent boot paths wake a session: the legacy resume-pending sweep
+# (``_maybe_recovery_wake``) and the durable-FIFO route (``_recovery_wake_for_session_key``,
+# fed by ``restart_recovery_pending.json`` and the startup unknown-sweep). Both admit a
+# prompt into the same FIFO, and the second path's ``_is_session_running`` gate is still
+# false while the first wake waits its turn — one restart produced two messages on
+# 2026-10-29 (16:07 delivered, 16:10 the duplicate after a 156 s turn).
+
+
+def test_claim_recovery_wake_is_once_per_boot():
+    runner = _Runner()
+    assert runner._claim_recovery_wake("agent:main:telegram:dm:1") is True
+    assert runner._claim_recovery_wake("agent:main:telegram:dm:1") is False
+    # Another session is independent.
+    assert runner._claim_recovery_wake("agent:main:local:dm:2") is True
+    # A wake that never committed must free the claim so a later path can try.
+    runner._release_recovery_wake("agent:main:telegram:dm:1")
+    assert runner._claim_recovery_wake("agent:main:telegram:dm:1") is True
+
+
+@pytest.mark.asyncio
+async def test_second_wake_path_does_not_double_deliver(monkeypatch):
+    """The legacy sweep and the FIFO route must not both speak: one restart, one wake."""
+    from types import SimpleNamespace
+
+    delivered: list[str] = []
+    key = "agent:main:telegram:dm:1"
+
+    entry = SimpleNamespace(session_key=key, last_resume_marked_at=None,
+                            updated_at=time.time())
+
+    class _Runner2(GatewayStartupMixin):
+        def __init__(self):
+            self.session_store = SimpleNamespace(
+                lookup_by_session_key=lambda k: entry)
+
+        def _restored_source(self, e):
+            return SimpleNamespace(platform="telegram")
+
+        def _delivery_adapter_for(self, source):
+            return object()
+
+        def _is_session_running(self, session_key):
+            return False
+
+    async def _admit_internal(adapter, event):
+        delivered.append("clean-restart")
+
+    async def _admit_route(*args, **kwargs):
+        delivered.append("fifo-route")
+        return True
+
+    class _Event:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+    monkeypatch.setattr("gateway.wake.admit_internal_event", _admit_internal,
+                        raising=False)
+    monkeypatch.setattr("gateway.session_automation.admit_route_wake", _admit_route,
+                        raising=False)
+    monkeypatch.setattr("gateway.platforms.event.MessageEvent", _Event, raising=False)
+    monkeypatch.setattr("gateway.session_authorities.active_authority",
+                        lambda runner: object(), raising=False)
+
+    runner = _Runner2()
+    await runner._maybe_recovery_wake(entry)
+    await runner._recovery_wake_for_session_key(key)
+
+    assert delivered == ["clean-restart"], (
+        "the second wake path re-admitted the same 系统恢复 prompt; a single restart must "
+        "produce exactly one wake per session")

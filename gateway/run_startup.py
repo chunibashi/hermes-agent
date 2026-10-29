@@ -694,6 +694,32 @@ class GatewayStartupMixin:
             logger.info("Scheduled auto-resume for %d restart-interrupted session(s)", scheduled)
         return scheduled
 
+    def _claim_recovery_wake(self, session_key: str) -> bool:
+        """Claim this boot's single recovery wake for *session_key* (False if taken).
+
+        TWO independent paths wake a session on one boot: the legacy resume-pending
+        sweep (``_maybe_recovery_wake``) and the durable-FIFO route
+        (``_recovery_wake_for_session_key``, fed by ``restart_recovery_pending.json`` and
+        by the startup unknown-sweep). Each admits its own ``_RESTART_RECOVERY_PROMPT``,
+        and the second path's ``_is_session_running`` gate is still false while the first
+        wake waits in the FIFO — 2026-10-29: ONE restart put two 「[系统恢复]」 messages in
+        a Telegram chat, the second queueing behind the first turn's 156s and then
+        answering the same request again (16:07 and 16:10).
+        """
+        claimed = getattr(self, "_recovery_wake_claimed_keys", None)
+        if claimed is None:
+            claimed = self._recovery_wake_claimed_keys = set()
+        if session_key in claimed:
+            return False
+        claimed.add(session_key)
+        return True
+
+    def _release_recovery_wake(self, session_key: str) -> None:
+        """Undo a claim whose wake never reached the FIFO, so a later path may still try."""
+        claimed = getattr(self, "_recovery_wake_claimed_keys", None)
+        if claimed is not None:
+            claimed.discard(session_key)
+
     async def _maybe_recovery_wake(self, entry) -> bool:
         """Deliver a recovery wake to a canonical session whose turn was cleanly
         interrupted by a restart (settled admission, empty FIFO). Returns True
@@ -716,9 +742,17 @@ class GatewayStartupMixin:
                 return False
             from gateway.wake import admit_internal_event
             from gateway.platforms.event import MessageEvent, MessageType
+            if not self._claim_recovery_wake(entry.session_key):
+                logger.debug("Recovery wake skipped for %s: already queued this boot",
+                             entry.session_key)
+                return False
             event = MessageEvent(
                 text=_RESTART_RECOVERY_PROMPT, message_type=MessageType.TEXT, source=source, internal=True)
-            await admit_internal_event(adapter, event)
+            try:
+                await admit_internal_event(adapter, event)
+            except Exception:
+                self._release_recovery_wake(entry.session_key)
+                raise
             logger.info("Delivered recovery wake to %s after clean restart", entry.session_key)
             return True
         except Exception as exc:
@@ -824,12 +858,23 @@ class GatewayStartupMixin:
             if adapter is None:
                 logger.debug("Recovery wake skipped for %s: adapter not ready", session_key)
                 return False
-            ok = await admit_route_wake(
-                self, adapter, source, _RESTART_RECOVERY_PROMPT,
-                "restart-recovery")
+            if not self._claim_recovery_wake(session_key):
+                logger.debug("Recovery wake skipped for %s: already queued this boot",
+                             session_key)
+                return False
+            try:
+                ok = await admit_route_wake(
+                    self, adapter, source, _RESTART_RECOVERY_PROMPT,
+                    "restart-recovery")
+            except Exception:
+                self._release_recovery_wake(session_key)
+                raise
             if ok:
                 logger.info("Delivered recovery wake to %s after restart", session_key)
             else:
+                # Not committed (live route mismatch / no committed turn / paused): let a
+                # later path try rather than burning this boot's one claim.
+                self._release_recovery_wake(session_key)
                 logger.info(
                     "Recovery wake REFUSED for %s: admit_route_wake did not commit "
                     "(live route mismatch / no committed turn / paused)",
