@@ -1262,7 +1262,14 @@ export function useBackgroundSync({
             ),
             storedSessionId,
             updateSessionState
-          })
+          }),
+        // A resume is the only RPC that re-attaches this connection to the
+        // session's event stream (authority.attach -> fanout.attach), so a turn
+        // that stays silent while the backend still reports it running gets one
+        // here. The snapshot it returns is deliberately dropped: the point is the
+        // subscription, and the live events that follow repaint the view.
+        reattach: (runtimeSessionId, storedSessionId) =>
+          requestGateway('session.resume', { session_id: storedSessionId }, 30_000)
       }),
     [requestGateway, updateSessionState]
   )

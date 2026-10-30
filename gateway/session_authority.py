@@ -10,6 +10,7 @@ import contextlib
 from contextvars import ContextVar
 from dataclasses import asdict, dataclass, field
 from functools import partial
+import logging
 import sqlite3
 from types import SimpleNamespace
 import uuid
@@ -368,6 +369,16 @@ class SessionAuthority:
                     live.event_stream.catch_up(transport, *replay_from)
                 live.event_stream.fanout.attach(transport)
                 live.event_stream.on_overflow = partial(self._retire_overflowed, ref.session_id)
+            else:
+                # The snapshot below still answers, so the client reads this as a
+                # successful attach while NO event will ever reach it: the view
+                # then freezes until the user switches away and back (the 2026-10-30
+                # "看不到实时渲染" report, where the backend kept publishing 119
+                # events/30s to a fresh socket with this one silent). Name the
+                # condition instead of leaving a silent success.
+                logging.getLogger(__name__).warning(
+                    'attach for %s found no transport for %s; the snapshot answers but the '
+                    'event stream will not reach this viewer', ref.session_id, actor.transport_id)
             active_generation = handle.execution_generation if handle.execution_state == "running" else None
             prompts = live.controls.snapshot(ref.session_id, active_generation)
             epoch, sequence = live.event_stream.watermark()

@@ -364,6 +364,13 @@ interface LiveTurnBackend {
   /** Pull the stored transcript for an on-screen session whose turn the
    *  backend reported ended, so a reply that finished there shows up here. */
   refreshTranscript?: (runtimeId: string, storedSessionId: string) => Promise<unknown> | unknown
+  /** Re-subscribe a session whose turn the backend still reports as running
+   *  while this socket has seen no event for the whole silence window. The turn
+   *  is alive; the SUBSCRIPTION is what died (a gateway restart or an overflowed
+   *  fanout retires it while the socket keeps answering RPCs), and only a resume
+   *  re-attaches the event stream. Without this the view freezes until the user
+   *  switches away and back. */
+  reattach?: (runtimeId: string, storedSessionId: string) => Promise<unknown> | unknown
 }
 
 let liveTurnBackend: LiveTurnBackend | null = null
@@ -537,6 +544,25 @@ async function onEventSilence(runtimeId: string) {
   silentTurnChecks.delete(runtimeId)
 
   if (verdict !== 'ended') {
+    // The turn is alive but this socket has not seen one event for the whole
+    // window: the subscription died under a live turn (gateway restart, an
+    // overflowed fanout retiring the peer — the socket keeps answering RPCs, so
+    // nothing else notices). Re-subscribe now; waiting only restarts the clock
+    // and the view stays frozen until the user switches away and back.
+    if (verdict === 'running') {
+      const storedSessionId = $sessionStates.get()[runtimeId]?.storedSessionId
+      const reattach = liveTurnBackend?.reattach
+
+      if (reattach && storedSessionId) {
+        try {
+          await reattach(runtimeId, storedSessionId)
+        } catch {
+          // The next window asks again; a resume that cannot commit now may
+          // land once the gateway settles.
+        }
+      }
+    }
+
     noteSessionEvent(runtimeId)
 
     return
