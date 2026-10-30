@@ -91,6 +91,11 @@ _WS_WRITE_TIMEOUT_S = 10.0
 # cannot drain ~48 KiB in 30s is gone, and closing here starts its reconnect instead of leaving every
 # later frame and RPC reply parked behind the writer lock (#106369).
 _WS_SEND_DEADLINE_S = 30.0
+# A dispatched request answered slower than this gets one WARNING with its method and elapsed time.
+# Clients put their deadline on the REQUEST (30-120s), so a read that takes seconds is invisible to
+# them until it crosses that line — while a frame that never arrived looks identical from their side.
+# Cheap per-request receipt; the log is the only place that tells the two apart after the fact.
+_WS_SLOW_RPC_S = 5.0
 _WS_LOG_PAYLOAD_PREVIEW = 240
 # Frames read ahead of a busy dispatcher. RPCs still dispatch one at a time in arrival order, but on a
 # per-connection task so the read loop keeps answering gateway.ping while a handler blocks (a lock held
@@ -456,6 +461,10 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: 
 
     pending: asyncio.Queue = asyncio.Queue(maxsize=_WS_DISPATCH_QUEUE_MAX)
     control_pending: asyncio.Queue = asyncio.Queue(maxsize=_WS_DISPATCH_QUEUE_MAX)
+    # Request id -> arrival time, so a dispatched reply can say how long it waited in a lane. Only ids
+    # this connection is holding an unanswered frame for live here (popped on dispatch, cleared on
+    # disconnect), so its size is bounded by the two lane queues.
+    arrivals: dict[Any, float] = {}
     dispatcher: asyncio.Task | None = None
     control_dispatcher: asyncio.Task | None = None
     concurrent_reads: set[asyncio.Task] = set()
@@ -492,6 +501,8 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: 
         # dispatch() may schedule long handlers on the pool; it returns None then and the worker
         # writes the response itself via transport.write (a separate thread, so that is the safe
         # path). Inline handlers return the response dict, written here from the loop.
+        started = time.perf_counter()
+        waited = started - arrivals.pop(req_id, started) if req_id is not None else 0.0
         try:
             resp = await _dispatch_request(authority_connection, req, req_method, transport)
         # health: allow BLE001 -- dispatch boundary: logs the traceback (_log.exception) and answers -32603
@@ -501,6 +512,15 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: 
             await _reply(_error(-32603, "internal error", req_id), "send_failed_after_dispatch_crash",
                          "ws dispatch-crash reply send failed peer=%s id=%s method=%s", peer, req_id, req_method)
             return
+        elapsed = time.perf_counter() - started
+        if waited >= _WS_SLOW_RPC_S or elapsed >= _WS_SLOW_RPC_S:
+            # A client's deadline is on the REQUEST, not on the socket, so a small frame answered late is
+            # indistinguishable from one that never arrived. This line separates the two after the fact:
+            # ``queued`` is time spent in a lane before this handler ran (a busy serial lane, a held
+            # profile start), ``handler`` is the work itself. NO line for a method the client reported as
+            # timed out means the frame never reached this dispatcher — the client's own connection.
+            _log.warning("ws slow rpc peer=%s id=%s method=%s queued=%.1fs handler=%.1fs",
+                         peer, req_id, req_method, waited, elapsed)
         if resp is not None:
             await _reply(resp, "send_failed_after_response",
                          "ws response send failed peer=%s id=%s method=%s", peer, req_id, req_method)
@@ -739,11 +759,14 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: 
                 await _reply({"jsonrpc": "2.0", "result": {"ok": True}, "id": req_id}, "send_failed_after_heartbeat",
                              "ws heartbeat reply send failed peer=%s id=%s", peer, req_id)
                 continue
+            if isinstance(req, dict) and req.get("id") is not None:
+                arrivals[req["id"]] = time.perf_counter()
             await _queue_request(req)
     except _SendFailed:
         pass
     finally:
         _client_left()
+        arrivals.clear()
         if dispatcher is not None:
             # Finish the in-flight handler and the frames read before the disconnect (as the serial read loop
             # did) before the teardown below parks this transport's sessions. A cancelled connection (server
