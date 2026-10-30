@@ -96,6 +96,10 @@ _WS_SEND_DEADLINE_S = 30.0
 # them until it crosses that line — while a frame that never arrived looks identical from their side.
 # Cheap per-request receipt; the log is the only place that tells the two apart after the fact.
 _WS_SLOW_RPC_S = 5.0
+# How long a twin frame waits for the projection already in flight for its session before running its
+# own copy. Long enough for a real transcript read, short enough that a producer that died without
+# publishing cannot park the twin.
+_WS_TWIN_WAIT_S = 60.0
 _WS_LOG_PAYLOAD_PREVIEW = 240
 # Frames read ahead of a busy dispatcher. RPCs still dispatch one at a time in arrival order, but on a
 # per-connection task so the read loop keeps answering gateway.ping while a handler blocks (a lock held
@@ -133,6 +137,22 @@ _WS_ANSWER_METHODS = frozenset({"clarify.lock"})
 def _answers_open_request(req: Any) -> bool:
     from tui_gateway.server_requests import is_response_frame
     return isinstance(req, dict) and (req.get("method") in _WS_ANSWER_METHODS or is_response_frame(req))
+
+
+def _read_twin_key(req: Any) -> tuple[str, str, str] | None:
+    """``(method, session, profile)`` of a read whose twin may share its reply, else None.
+
+    Two frames naming the same session and profile want the same projection; the one already in
+    flight answers both. A frame with no session, or a mutating verb, keeps its own dispatch."""
+    if not isinstance(req, dict):
+        return None
+    params = req.get("params")
+    if not isinstance(params, dict):
+        return None
+    session_id = params.get("session_id")
+    if not isinstance(session_id, str) or not session_id:
+        return None
+    return (str(req.get("method") or ""), session_id, str(params.get("profile") or ""))
 
 # Cheap, user-facing control RPCs that must NEVER queue behind a slow handler on the serial lane:
 # an interrupt, a clarify/approval answer, a cancel, or a control read stuck behind a 30s read is a
@@ -465,6 +485,9 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: 
     # this connection is holding an unanswered frame for live here (popped on dispatch, cleared on
     # disconnect), so its size is bounded by the two lane queues.
     arrivals: dict[Any, float] = {}
+    # (method, session, profile) -> the reply future of the read already running for it, so a
+    # re-issued open shares that projection instead of queueing another copy (``_reply_twin``).
+    inflight_reads: dict[tuple[str, str, str], asyncio.Future] = {}
     dispatcher: asyncio.Task | None = None
     control_dispatcher: asyncio.Task | None = None
     concurrent_reads: set[asyncio.Task] = set()
@@ -493,8 +516,12 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: 
         client_gone.set()
         held_dropped.update(key for key, started in held_waiting.items() if not started.is_set())
 
-    async def _dispatch_one(req: Any) -> None:
-        """Dispatch one request and write its inline reply."""
+    async def _dispatch_one(req: Any, published: asyncio.Future | None = None) -> None:
+        """Dispatch one request and write its inline reply.
+
+        *published* is a concurrent read's future: this request's reply frame is published on it so
+        a twin frame for the same session answers from that frame instead of projecting the same
+        transcript a second time (``_reply_twin``)."""
         nonlocal dispatch_crashes
         req_id = req.get("id") if isinstance(req, dict) else None
         req_method = req.get("method") if isinstance(req, dict) else None
@@ -509,6 +536,8 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: 
         except Exception:
             dispatch_crashes += 1
             _log.exception("ws dispatch crash peer=%s id=%s method=%s", peer, req_id, req_method)
+            if published is not None and not published.done():
+                published.set_result(None)  # a twin answers for itself rather than waiting on this
             await _reply(_error(-32603, "internal error", req_id), "send_failed_after_dispatch_crash",
                          "ws dispatch-crash reply send failed peer=%s id=%s method=%s", peer, req_id, req_method)
             return
@@ -521,21 +550,48 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: 
             # timed out means the frame never reached this dispatcher — the client's own connection.
             _log.warning("ws slow rpc peer=%s id=%s method=%s queued=%.1fs handler=%.1fs",
                          peer, req_id, req_method, waited, elapsed)
+        if published is not None and not published.done():
+            published.set_result(resp)  # a twin replays this frame under its own id
         if resp is not None:
             await _reply(resp, "send_failed_after_response",
                          "ws response send failed peer=%s id=%s method=%s", peer, req_id, req_method)
 
-    async def _dispatch_concurrent_read(req: Any) -> None:
+    async def _reply_twin(req: Any, published: asyncio.Future) -> None:
+        """Answer a duplicate read from the reply its twin frame is producing.
+
+        A canvas of mounted tiles re-issues ``session.resume`` for the same session on every
+        reconnect and after every timeout, and each one projects a whole stored transcript. Two may
+        run at once on this connection, so the rest queued behind them: measured live, replies
+        reached the client ``queued=136-156s`` late, long past its deadline, and the retries that
+        followed refilled the lane. The snapshot a twin would compute is the one already in flight.
+        """
+        frame = None
+        done, _ = await asyncio.wait({published}, timeout=_WS_TWIN_WAIT_S)
+        if done and not published.cancelled() and published.exception() is None:
+            frame = published.result()
+        if frame is None:  # the twin's handler wrote its own reply, crashed, or never published
+            await _dispatch_one(req)
+            return
+        await _reply({**frame, "id": req.get("id")}, "send_failed_after_coalesced_response",
+                     "ws coalesced response send failed peer=%s id=%s", peer, req.get("id"))
+
+    async def _dispatch_concurrent_read(req: Any, publish: asyncio.Future | None = None,
+                                       twin_key: tuple[str, str, str] | None = None) -> None:
         async with concurrent_read_slots:
             started_reads.add(asyncio.current_task())
             try:
-                await _dispatch_one(req)
+                await _dispatch_one(req, publish)
             except _SendFailed:
                 # A failed response ends the reader even from the concurrent lane, never by
                 # cancelling the serial lane's in-flight handler.
                 if not send_failed.done():
                     send_failed.set_result(None)
                 raise
+            finally:
+                # Only while the producing frame is still in flight may a twin share its reply: once
+                # this task ends (answered, cancelled, crashed), the next frame runs for itself.
+                if twin_key is not None:
+                    inflight_reads.pop(twin_key, None)
 
     def _finish_concurrent_read(task: asyncio.Task) -> None:
         # Here, not in the task: a task cancelled before its first step never runs its body.
@@ -620,12 +676,24 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: 
         """Dispatch controls in arrival order; bounded expensive read-only projections run alongside them."""
         while (req := await _next_request()) is not stop:
             req_method = req.get("method") if isinstance(req, dict) else None
-            if (req_method in _WS_CONCURRENT_READ_METHODS
-                    and len(concurrent_reads) < _WS_CONCURRENT_READ_LIMIT + _WS_WAITING_READ_LIMIT):
-                task = asyncio.create_task(_dispatch_concurrent_read(req))
-                concurrent_reads.add(task)
-                task.add_done_callback(_finish_concurrent_read)
-                continue
+            if req_method in _WS_CONCURRENT_READ_METHODS:
+                twin_key = _read_twin_key(req)
+                twin = inflight_reads.get(twin_key) if twin_key is not None else None
+                if twin is not None:
+                    # The same projection is already running for this session: share its reply
+                    # instead of queueing a second copy of the same transcript read.
+                    task = asyncio.create_task(_reply_twin(req, twin))
+                    concurrent_reads.add(task)
+                    task.add_done_callback(_finish_concurrent_read)
+                    continue
+                if len(concurrent_reads) < _WS_CONCURRENT_READ_LIMIT + _WS_WAITING_READ_LIMIT:
+                    published = asyncio.get_running_loop().create_future()
+                    if twin_key is not None:
+                        inflight_reads[twin_key] = published
+                    task = asyncio.create_task(_dispatch_concurrent_read(req, published, twin_key))
+                    concurrent_reads.add(task)
+                    task.add_done_callback(_finish_concurrent_read)
+                    continue
             # A read past the waiting cap is dispatched HERE, serially: slower for that one
             # projection, but the reader keeps draining frames (see _queue_request).
             if await _hold_for_profile_start(req):
@@ -767,6 +835,7 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: 
     finally:
         _client_left()
         arrivals.clear()
+        inflight_reads.clear()
         if dispatcher is not None:
             # Finish the in-flight handler and the frames read before the disconnect (as the serial read loop
             # did) before the teardown below parks this transport's sessions. A cancelled connection (server
