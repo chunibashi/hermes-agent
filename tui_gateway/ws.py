@@ -115,7 +115,14 @@ _WS_DISPATCH_QUEUE_MAX = 256
 # and model.options read as dead to a client whose resume reply is slow, producing the recurring
 # "30s session.resume" desktop timeouts.  It is a read projection like context_breakdown, so it
 # belongs here.
-_WS_CONCURRENT_READ_METHODS = frozenset({"session.context_breakdown", "session.resume"})
+#
+# ``session.history`` joins them for the same reason, observed live on 2026-10-30: a canvas of
+# mounted tiles polls it per tile, its handler re-reads a whole transcript
+# (``get_messages_as_conversation(include_ancestors=True, include_row_ids=True)``), and on the
+# serial lane it measured ``queued=110-112s`` behind the resumes — every poll dead long before
+# its reply, so the transcript stopped updating until the user reloaded the window.
+_WS_CONCURRENT_READ_METHODS = frozenset({"session.context_breakdown", "session.resume",
+                                         "session.history"})
 _WS_CONCURRENT_READ_LIMIT = 2
 # Reads run CONCURRENTLY while fewer than this many are outstanding; one past it dispatches
 # serially in _dispatch_loop instead. It never parks the reader: a semaphore awaited from the
