@@ -1791,7 +1791,7 @@ export function openTileGatewayScopes(): Set<string> {
  * Returns undefined when no owner is known — the caller fails closed
  * (assertSessionOwnerResolved), never falls to "active".
  */
-export function knownOwnerForSession(sessionId: null | string | undefined): SessionOwnerScope {
+export function knownOwnerForSession(sessionId: null | string | undefined, rows = ownerLookupSessionRows()) {
   if (!sessionId) {
     return undefined
   }
@@ -1801,7 +1801,7 @@ export function knownOwnerForSession(sessionId: null | string | undefined): Sess
   const durable =
     sessionTileOwner(storedSessionId) ??
     getSessionOwnerHint(storedSessionId) ??
-    knownSessionOwner(ownerLookupSessionRows(), storedSessionId)
+    knownSessionOwner(rows, storedSessionId)
 
   if (isSessionOwnerRoute(durable)) {
     return durable
