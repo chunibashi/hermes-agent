@@ -475,17 +475,21 @@ class GatewayTurnPrepareMixin:
         turn_sidecar_notes.append(context_note)
 
         try:
+            from gateway.bot_peer_notices import automatic_notices_allowed
             from gateway.run import _auto_reset_reason_text
             policy = self.session_store.config.get_reset_policy(
                 platform=source.platform, session_type=getattr(source, 'chat_type', 'dm'),
             )
             platform_name = source.platform.value if source.platform else ""
-            # suspended / restart-recovery-expired sessions always notify (the user must learn they
-            # can /resume); idle/daily resets respect policy.notify + excluded platforms + activity.
-            should_notify = reset_reason in {"suspended", "resume_pending_expired"} or (
-                policy.notify
-                and getattr(session_entry, 'reset_had_activity', False)
-                and platform_name not in policy.notify_exclude_platforms
+            # Local: suspended / restart-recovery-expired sessions always notify (the user must learn
+            # they can /resume); idle/daily resets respect policy.notify + excluded platforms + activity.
+            # Upstream: never notify a known bot peer.
+            should_notify = automatic_notices_allowed(source) and (
+                reset_reason in {"suspended", "resume_pending_expired"} or (
+                    policy.notify
+                    and getattr(session_entry, 'reset_had_activity', False)
+                    and platform_name not in policy.notify_exclude_platforms
+                )
             )
             adapter = self._delivery_adapter_for(source) if should_notify else None
             if adapter:
