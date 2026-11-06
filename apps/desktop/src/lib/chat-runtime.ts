@@ -443,6 +443,14 @@ function replySourceRowId(message: ChatMessage): number | undefined {
   return undefined
 }
 
+// The safety-refused notice rides metadata.custom on the system row, like
+// asyncResult — extracted so toRuntimeMessage keeps its complexity in budget.
+function contentRefusedMeta(
+  message: ChatMessage
+): { contentRefused: NonNullable<ChatMessage['contentRefused']> } | Record<string, never> {
+  return message.contentRefused ? { contentRefused: message.contentRefused } : {}
+}
+
 export function toRuntimeMessage(message: ChatMessage): ThreadMessage {
   const role =
     message.role === 'user' || message.role === 'assistant' || message.role === 'system' ? message.role : 'assistant'
@@ -492,7 +500,8 @@ export function toRuntimeMessage(message: ChatMessage): ThreadMessage {
         custom: {
           ...timelineMeta,
           ...(message.asyncResult ? { asyncResult: message.asyncResult } : {}),
-          ...(message.asyncResultKind ? { asyncResultKind: message.asyncResultKind } : {})
+          ...(message.asyncResultKind ? { asyncResultKind: message.asyncResultKind } : {}),
+          ...contentRefusedMeta(message)
         }
       }
     } as ThreadMessage
