@@ -121,8 +121,10 @@ _WS_DISPATCH_QUEUE_MAX = 256
 # (``get_messages_as_conversation(include_ancestors=True, include_row_ids=True)``), and on the
 # serial lane it measured ``queued=110-112s`` behind the resumes — every poll dead long before
 # its reply, so the transcript stopped updating until the user reloaded the window.
+#
+# ``session.transcript`` is the same shape upstream added for paged transcript reads.
 _WS_CONCURRENT_READ_METHODS = frozenset({"session.context_breakdown", "session.resume",
-                                         "session.history"})
+                                         "session.history", "session.transcript"})
 _WS_CONCURRENT_READ_LIMIT = 2
 # Reads run CONCURRENTLY while fewer than this many are outstanding; one past it dispatches
 # serially in _dispatch_loop instead. It never parks the reader: a semaphore awaited from the
@@ -439,6 +441,11 @@ async def _dispatch_request(authority_connection: Any, req: Any, req_method: Any
     local Desktop runs as work for it (the welcome trial and onboarding key on that), and so do the
     threads it hands off to: ``to_thread`` and the legacy pool copy this context."""
     from hermes_cli.process_identity import serving_local_desktop
+    from tui_gateway.server_requests import resolve_pinned_response
+    if authority_connection is not None and resolve_pinned_response(req, transport):
+        # The answer to a request a sidecar RPC sent back to THIS socket (vault.preview.fill's page
+        # scripts); the authority's own registry never holds those ids.
+        return None
     with serving_local_desktop(getattr(transport, "desktop_local", False)):
         if authority_connection is None:
             return await asyncio.to_thread(server.dispatch, req, transport)
