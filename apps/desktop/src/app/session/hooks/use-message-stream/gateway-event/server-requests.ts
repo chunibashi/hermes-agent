@@ -41,7 +41,6 @@ import {
 } from '@/store/session-states'
 import { parkSetupBeat, type SetupBeatCard } from '@/store/setup-beat'
 import { parkThemePick } from '@/store/theme-pick'
-import { requestScrollToBottom } from '@/store/thread-scroll'
 import { $toursEnabled } from '@/store/tours'
 
 import type { GatewayEventDeps } from './types'
@@ -332,12 +331,17 @@ const parkClarify = (ctx: ServerRequestContext, clarifyRequest: ClarifyRequest) 
         needsInput: true
       }
     })
-
-    if (sessionId === deps.activeSessionIdRef.current) {
-      requestScrollToBottom(sessionId)
-    }
   }
 
+  // Deliberately does NOT scroll the transcript. A question arriving is not a
+  // reason to move a reader: the desktop rule is offer, don't hijack, and this
+  // call used to be the exception — it fired on every delivery, including a
+  // re-delivered (replayed) request, and `scrollToBottom` re-locks the
+  // stick-to-bottom follow, so a reader who scrolled up was pulled back down
+  // and then kept there while the card laid out. The question is offered three
+  // ways instead: the sidebar's needs-input flag, the native notification
+  // below (first delivery only), and the jump button, which is already showing
+  // whenever the reader is away from the bottom.
   notifyInput(ctx, clarifyRequest.questions.map(q => q.question).join(' · '))
 }
 

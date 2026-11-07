@@ -86,7 +86,7 @@ describe('clarify request stream hydration', () => {
     })
   })
 
-  it('reveals a clarify prompt raised by the active session', () => {
+  it('never moves the transcript when the active session raises a clarify', () => {
     mountStream()
 
     clarifyRequest({
@@ -94,7 +94,11 @@ describe('clarify request stream hydration', () => {
       request_id: 'req-reveal'
     })
 
-    expect(scrollToBottom).toHaveBeenCalledOnce()
+    // Offered, never force-revealed. Scrolling here re-locks stick-to-bottom
+    // and drags a reader who had scrolled up back down (and kept them there
+    // while the card laid out). The sidebar flag, the native notification and
+    // the jump button are the affordances instead.
+    expect(scrollToBottom).not.toHaveBeenCalled()
   })
 
   it('does not move the active thread for a background session clarify', () => {
