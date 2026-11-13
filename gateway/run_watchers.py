@@ -13,6 +13,7 @@ import time
 from collections import Counter
 from typing import Any, Dict, Optional
 
+from gateway.run_auto_resume import GatewayAutoResumeMixin
 from gateway.session_stall import (
     format_session_stall_notification,
     resolve_session_idle_seconds_from_activity,
@@ -40,8 +41,9 @@ async def _interruptible_sleep(runner, seconds: int) -> None:
         await asyncio.sleep(1)
 
 
-class GatewaySessionWatchersMixin:
-    """Session housekeeping / stall / catalog-refresh watcher loops for GatewayRunner."""
+class GatewaySessionWatchersMixin(GatewayAutoResumeMixin):
+    """Session housekeeping / stall / catalog-refresh watcher loops for GatewayRunner (and, through
+    ``GatewayAutoResumeMixin``, the ``delegation.auto_resume`` scheduler)."""
 
     async def _session_expiry_watcher(self, interval: int = 300):
         """Finalize expired sessions, then run the cache/store sweeps."""

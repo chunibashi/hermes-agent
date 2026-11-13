@@ -48,6 +48,20 @@ def _hermes_dirs() -> list[Path]:
     return list(dict.fromkeys(_resolve_each((_hermes_home_path(), _hermes_root_path()))))
 
 
+def _profile_homes() -> list[Path]:
+    """Resolved ``<root>/profiles/<name>`` homes, active or not."""
+    with suppress(OSError):
+        return _resolve_each(p for p in (_hermes_root_path() / "profiles").iterdir() if p.is_dir())
+    return []
+
+
+def _credential_store_dirs() -> list[Path]:
+    """``_hermes_dirs()`` plus every named profile home. A sibling profile's auth.json,
+    .env or mcp-tokens/ is as much a credential store as the active one's, but the agent
+    has no business reading or rewriting it from this profile (#37617, #46411)."""
+    return list(dict.fromkeys([*_hermes_dirs(), *_profile_homes()]))
+
+
 def _resolve_each(paths) -> list[Path]:
     """``p.resolve()`` for each path, skipping ones that fail to resolve."""
     out: list[Path] = []
@@ -236,8 +250,8 @@ def build_write_denied_paths(home: str) -> set[str]:
         (".ssh", "authorized_keys"), (".ssh", "id_rsa"), (".ssh", "id_ed25519"),
         (".netrc",), (".pgpass",), (".npmrc",), (".pypirc",), (".git-credentials",),
     )
-    # Secret material under HERMES_HOME, on both the active profile and the global
-    # root: overwriting the root .env leaks credentials across every profile that
+    # Secret material under HERMES_HOME, on the active profile, every sibling profile
+    # and the global root: overwriting the root .env leaks credentials across every profile that
     # inherits it, and the root Anthropic PKCE store is still read by default /
     # non-profile sessions when a profile is active. google_oauth.json is an OAuth
     # token store; SECRET_CACHE_STORES hold secret values and the Photon sidecar token.
@@ -253,7 +267,7 @@ def build_write_denied_paths(home: str) -> set[str]:
     )
     paths = [
         *(os.path.join(home, *f) for f in home_files),
-        *(str(base / f) for f in hermes_files for base in (_hermes_home_path(), _hermes_root_path())),
+        *(str(base / f) for base in _credential_store_dirs() for f in hermes_files),
         "/etc/sudoers", "/etc/passwd", "/etc/shadow",
     ]
     return {os.path.realpath(p) for p in paths}
@@ -349,7 +363,7 @@ def _classify_resolved_write_denial(homes: set[str], resolved: str) -> Optional[
     ):
         return "credential"
 
-    for base in _hermes_dirs():
+    for base in _credential_store_dirs():
         for sub in _HERMES_PROTECTED_SUBPATHS:
             with suppress(Exception):
                 if _is_under(resolved, os.path.realpath(os.path.join(str(base), sub))):
@@ -427,13 +441,40 @@ _READ_DENIED_DIRS = (
 )
 
 
+# Device/fd paths whose reads hang the process. Checked by path only — no I/O.
+_BLOCKED_DEVICE_PATHS = frozenset({
+    "/dev/zero", "/dev/random", "/dev/urandom", "/dev/full",     # never reach EOF
+    "/dev/stdin", "/dev/tty", "/dev/console",                    # block on input
+    "/dev/stdout", "/dev/stderr",                                # nonsensical to read
+    "/dev/fd/0", "/dev/fd/1", "/dev/fd/2",                       # fd aliases
+})
+# /proc/<pid>/... (and /proc/<pid>/task/<tid>/...) files that leak secrets,
+# argv, memory layout (ASLR oracle: maps family, auxv, pagemap) or raw memory.
+_BLOCKED_PROC_SUFFIXES = (
+    "/fd/0", "/fd/1", "/fd/2",  # stdio aliases
+    "/environ", "/cmdline", "/maps", "/smaps", "/smaps_rollup", "/numa_maps",
+    "/mem", "/auxv", "/pagemap")
+
+
+def is_blocked_device_path(path: str) -> bool:
+    """True for a concrete device/fd/proc path that can hang reads or leak process state.
+
+    Path-only (no I/O, no ``~`` expansion): callers pass an expanded path. POSIX spellings only, so
+    after ``normpath`` a Windows path never matches."""
+    normalized = os.path.normpath(path)
+    if normalized in _BLOCKED_DEVICE_PATHS:
+        return True
+    return normalized.startswith("/proc/") and normalized.endswith(_BLOCKED_PROC_SUFFIXES)
+
+
 def get_read_block_error(path: str) -> Optional[str]:
     """Return an error message when a read targets a denied Hermes path.
 
-    Blocked: internal skill-hub caches (prompt-injection carriers), credential
-    stores under HERMES_HOME and the global root (exact files, plus anything
-    under ``mcp-tokens/``, ``browser-profile/``, ``vault/`` and ``webapp/``), and project-local ``.env``
-    files anywhere on disk (``.env.example`` is the documented-shape substitute).
+    Blocked: device/fd/proc files that hang reads or leak process state (``/dev/zero``,
+    ``/proc/<pid>/environ``; the literal path and the one it resolves to), internal skill-hub
+    caches (prompt-injection carriers), credential stores under HERMES_HOME, every profile home and
+    the global root (exact files, plus anything under ``mcp-tokens/``, ``browser-profile/``,
+    ``vault/`` and ``webapp/``), and project-local ``.env`` files anywhere on disk (``.env.example`` is the documented-shape substitute).
 
     Callers that resolve relative paths against a non-process cwd (e.g.
     ``TERMINAL_CWD``) MUST pass an absolute path: ``resolve()`` here anchors at
@@ -451,9 +492,14 @@ def get_read_block_error(path: str) -> Optional[str]:
     local = local_drive_spelling(path)
     lexical = sandbox_lexical_path(local)
     resolved = Path(lexical) if lexical is not None else Path(local).expanduser().resolve()
-    hermes_dirs = _hermes_dirs()
+    hermes_dirs = _credential_store_dirs()
     reason = None
-    if any(_is_under(resolved, hd / "skills" / ".hub") for hd in hermes_dirs):
+    if is_blocked_device_path(os.path.expanduser(local)) or is_blocked_device_path(str(resolved)):
+        reason = (
+            "is a device or process file: reading it can hang or leak process state "
+            "(environment, command line, memory layout)." + _DID_SUFFIX
+        )
+    elif any(_is_under(resolved, hd / "skills" / ".hub") for hd in hermes_dirs):
         reason = (
             "is an internal Hermes cache file and cannot be read directly to prevent "
             "prompt injection. Use the skills_list or skill_view tools instead."
