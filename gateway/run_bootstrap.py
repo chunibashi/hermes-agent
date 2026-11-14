@@ -319,39 +319,24 @@ async def _start_gateway_start_control_socket(runner):
         _main_loop = asyncio.get_running_loop()
 
         def _pause_for_update_handler(params: dict | None = None) -> dict:
-            # ``immediate: true`` asks for a restart that does NOT wait for active
-            # turns to finish: the requester (e.g. the gateway-lifecycle-guard
-            # plugin) has its own recovery contract and wants the kill NOW.
-            # The after-turn wait is owned by this process (run_shutdown.py), so
-            # zeroing the cap here — ON the loop, before request_restart reads it —
-            # is the only reliable place; a caller-side runner hack only works when
-            # caller and gateway share a process.
-            immediate = bool((params or {}).get("immediate"))
+            # ``{"force": true}`` (hermes update --force): stop live work now instead of waiting for
+            # idle. ``{"immediate": true}`` is the LOCAL alias of the same semantics (sent by the
+            # gateway-lifecycle-guard plugin): a restart NOW that must not wait for the message queue.
+            _params = params or {}
+            force = _params.get("force") is True or bool(_params.get("immediate"))
             try:
                 from hermes_cli.gateway import _get_restart_drain_timeout
-                _drain = float(_get_restart_drain_timeout())
+                _drain = 0.0 if force else float(_get_restart_drain_timeout())
             except Exception:
                 _drain = 30.0
-            accepted_box: list[bool] = []
+            accepted_box: list = []
             _done = threading.Event()
 
             def _request() -> None:
                 try:
-                    if immediate:
-                        try:
-                            runner._restart_after_turn_timeout = 0.0
-                        except Exception:
-                            pass
-                        # Zeroing only the after-turn cap still left stop() draining
-                        # for the configured window (``effective_stop_drain_timeout``
-                        # reads ``_restart_drain_timeout``, default 180s here): a
-                        # "restart now" then sat waiting on in-flight work, which is
-                        # exactly what this argument exists to prevent.
-                        try:
-                            runner._restart_drain_timeout = 0.0
-                        except Exception:
-                            pass
-                    accepted_box.append(runner.request_restart(detached=False, via_service=True))
+                    from gateway.restart_when_idle import force_restart, request_service_restart
+                    accepted_box.append(force_restart(runner) if force else request_service_restart(runner))
+                    accepted_box.append(runner._describe_active_work())
                 finally:
                     _done.set()
 
@@ -360,9 +345,9 @@ async def _start_gateway_start_control_socket(runner):
             accepted = bool(accepted_box and accepted_box[0])
             return {
                 "pausing": accepted, "already_stopping": not accepted,
-                "pid": os.getpid(),
-                "drain_timeout": 0.0 if immediate and accepted else _drain,
-                "immediate": immediate}
+                "pid": os.getpid(), "drain_timeout": _drain,
+                "immediate": force, "force": force,
+                "waiting_on": accepted_box[1] if len(accepted_box) > 1 else []}
 
         def _rescan_profiles_handler() -> dict:
             """``hermes profile create/delete`` asks the multiplexer to reconcile ``profiles/`` now
