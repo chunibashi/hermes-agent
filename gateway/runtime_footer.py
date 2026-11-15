@@ -139,6 +139,17 @@ class FooteredReply(str):
         instance.runtime_footer = footer
         return instance
 
+    # The gateway deep-copies this inside an event envelope (``session_events.publish``). A ``str``
+    # subclass is absent from ``copy._deepcopy_dispatch``, so ``copy`` rebuilds it through
+    # ``copyreg.__newobj__`` — which passes the text alone and trips the required ``footer``
+    # argument, failing the whole completion publish. The value is immutable, so sharing the
+    # instance IS the correct copy.
+    def __copy__(self):
+        return self
+
+    def __deepcopy__(self, memo):
+        return self
+
 
 class _FooterCaption(str):
     """A photo caption that carries the runtime footer (``caption_with_footer``)."""

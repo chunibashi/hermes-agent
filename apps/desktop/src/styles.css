@@ -417,6 +417,10 @@
     --ui-inline-code-background: color-mix(in srgb, #141414 5%, transparent);
     --ui-inline-code-foreground: color-mix(in srgb, #141414 88%, transparent);
     --ui-selection-background: color-mix(in srgb, #ffd24a 55%, transparent);
+    /* Find-in-page paint (lib/find-in-page-scope.ts). Drawn through
+       ::highlight() so the search never inserts a node into the transcript. */
+    --ui-find-hit-background: color-mix(in srgb, #ffd24a 42%, transparent);
+    --ui-find-active-background: color-mix(in srgb, #ff8a3d 66%, transparent);
 
     --dt-background: var(--ui-bg-chrome);
     --dt-foreground: var(--ui-text-primary);
@@ -628,6 +632,9 @@
     --ui-inline-code-background: color-mix(in srgb, #ffffff 7%, transparent);
     --ui-inline-code-foreground: color-mix(in srgb, #ffffff 88%, transparent);
     --ui-selection-background: color-mix(in srgb, #ffd24a 38%, transparent);
+    /* Find-in-page paint; dark ink needs less fill to stay legible. */
+    --ui-find-hit-background: color-mix(in srgb, #ffd24a 30%, transparent);
+    --ui-find-active-background: color-mix(in srgb, #ff8a3d 55%, transparent);
     /* A dark card sits ABOVE the chrome (#161618 over #0d0d0e), so an inline
        widget wearing the raw card fill reads as a lit panel. Take it down a
        touch — still clearly a surface, no longer the brightest thing in the
@@ -841,6 +848,21 @@
 
   *::selection {
     background: var(--ui-selection-background);
+    color: inherit;
+  }
+
+  /* Find-in-page highlights (lib/find-in-page-scope.ts). The Custom Highlight
+     API paints a Range without inserting, splitting or normalizing a single
+     node — a streamed re-render therefore cannot desync React from the
+     transcript's DOM. Only color/background/text-decoration are allowed on
+     ::highlight(). */
+  ::highlight(hermes-find-hit) {
+    background-color: var(--ui-find-hit-background);
+    color: inherit;
+  }
+
+  ::highlight(hermes-find-active) {
+    background-color: var(--ui-find-active-background);
     color: inherit;
   }
 }
