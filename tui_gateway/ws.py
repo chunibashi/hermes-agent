@@ -123,8 +123,10 @@ _WS_DISPATCH_QUEUE_MAX = 256
 # its reply, so the transcript stopped updating until the user reloaded the window.
 #
 # ``session.transcript`` is the same shape upstream added for paged transcript reads.
+# ``session.account_usage`` waits on a provider's usage API (a plugin hook up to its deadline).
 _WS_CONCURRENT_READ_METHODS = frozenset({"session.context_breakdown", "session.resume",
-                                         "session.history", "session.transcript"})
+                                         "session.history", "session.transcript",
+                                         "session.account_usage"})
 _WS_CONCURRENT_READ_LIMIT = 2
 # Reads run CONCURRENTLY while fewer than this many are outstanding; one past it dispatches
 # serially in _dispatch_loop instead. It never parks the reader: a semaphore awaited from the
