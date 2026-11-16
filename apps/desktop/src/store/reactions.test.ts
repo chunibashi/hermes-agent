@@ -16,25 +16,29 @@ const reactionTestState = vi.hoisted(() => {
 
   const gateway = { request: vi.fn(async (..._args: any[]) => ({ row_id: 7, reactions: [] })) }
 
+  const defaultOwnedRequest = async <T>(
+    _sessionId: string | null,
+    request: typeof gateway.request,
+    method: string,
+    params: Record<string, unknown>
+  ) => request(method, params) as Promise<T>
+
+  const notifyError = vi.fn()
+
   return {
     activeSessionId: store<string | null>(null),
+    defaultOwnedRequest,
     gateway,
     gatewayStore: store(gateway),
     messages: store<any[]>([]),
-    requestForOwnedSession: vi.fn(
-      async <T>(
-        _sessionId: string | null,
-        request: typeof gateway.request,
-        method: string,
-        params: Record<string, unknown>
-      ) => request(method, params) as Promise<T>
-    ),
+    notifyError,
+    requestForOwnedSession: vi.fn(defaultOwnedRequest),
     selectedStoredSessionId: store<string | null>(null)
   }
 })
 
 vi.mock('@/store/gateway', () => ({ $gateway: reactionTestState.gatewayStore }))
-vi.mock('@/store/notifications', () => ({ notifyError: vi.fn() }))
+vi.mock('@/store/notifications', () => ({ notifyError: reactionTestState.notifyError }))
 vi.mock('@/store/session-states', () => ({ requestForOwnedSession: reactionTestState.requestForOwnedSession }))
 vi.mock('@/store/session', () => ({
   $activeSessionId: reactionTestState.activeSessionId,
@@ -52,7 +56,11 @@ beforeEach(() => {
   reactionTestState.selectedStoredSessionId.set(null)
   reactionTestState.messages.set([])
   reactionTestState.gateway.request.mockClear()
-  reactionTestState.requestForOwnedSession.mockClear()
+  // reset, not clear: a queued `mockRejectedValueOnce` that a test never consumed would otherwise
+  // fire inside the next one.
+  reactionTestState.requestForOwnedSession.mockReset()
+  reactionTestState.requestForOwnedSession.mockImplementation(reactionTestState.defaultOwnedRequest)
+  reactionTestState.notifyError.mockClear()
 })
 
 function reaction(emoji: string, author: MessageReaction['author']): MessageReaction {
@@ -146,5 +154,53 @@ describe('toggleMessageReaction session binding', () => {
       'message.react',
       expect.objectContaining({ session_id: 'session-1', row_id: 340733, emoji: '🤮' })
     )
+  })
+})
+
+describe('toggleMessageReaction after the reply timed out', () => {
+  const timedOut = () => new Error('request timed out after 60s: message.react')
+
+  it('re-sends the same absolute set once and adopts the server list instead of rolling back', async () => {
+    reactionTestState.messages.set([{ id: 'message-1', parts: [], role: 'assistant', rowId: 424011 }])
+    reactionTestState.requestForOwnedSession
+      .mockRejectedValueOnce(timedOut())
+      .mockResolvedValueOnce({ row_id: 424011, reactions: [reaction('❤️', 'user')] })
+
+    await toggleMessageReaction(
+      { id: 'message-1', parts: [], role: 'assistant', rowId: 424011 },
+      '❤️',
+      'user',
+      'session-1'
+    )
+
+    expect(reactionTestState.requestForOwnedSession).toHaveBeenCalledTimes(2)
+    const [first, second] = reactionTestState.requestForOwnedSession.mock.calls
+
+    // Same params both times: the backend REPLACES this author's entry, so a replay converges on
+    // the intended state rather than flipping the tapback off again.
+    expect(second).toEqual(first)
+    expect(reactionTestState.messages.get()[0].reactions).toEqual([reaction('❤️', 'user')])
+    expect(reactionTestState.notifyError).not.toHaveBeenCalled()
+  })
+
+  it('rolls back and reports once when the retry fails too', async () => {
+    reactionTestState.messages.set([{ id: 'message-1', parts: [], role: 'assistant', rowId: 5 }])
+    reactionTestState.requestForOwnedSession.mockRejectedValueOnce(timedOut()).mockRejectedValueOnce(timedOut())
+
+    await toggleMessageReaction({ id: 'message-1', parts: [], role: 'assistant', rowId: 5 }, '❤️', 'user', 'session-1')
+
+    expect(reactionTestState.requestForOwnedSession).toHaveBeenCalledTimes(2)
+    expect(reactionTestState.messages.get()[0].reactions).toEqual([])
+    expect(reactionTestState.notifyError).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not retry a refusal that is not a deadline', async () => {
+    reactionTestState.messages.set([{ id: 'message-1', parts: [], role: 'assistant', rowId: 5 }])
+    reactionTestState.requestForOwnedSession.mockRejectedValueOnce(new Error('message not found'))
+
+    await toggleMessageReaction({ id: 'message-1', parts: [], role: 'assistant', rowId: 5 }, '❤️', 'user', 'session-1')
+
+    expect(reactionTestState.requestForOwnedSession).toHaveBeenCalledTimes(1)
+    expect(reactionTestState.notifyError).toHaveBeenCalledTimes(1)
   })
 })

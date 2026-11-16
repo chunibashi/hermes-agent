@@ -38,6 +38,19 @@ _dashboard_client_touch_pool = concurrent.futures.ThreadPoolExecutor(
 _dashboard_client_touch_pending: set = set()
 
 
+# Frame encoding is CPU-bound and runs inside json's C encoder, which holds the GIL for the whole
+# call: encoded inline on the event loop, one big reply froze every peer's writes, Discord's
+# heartbeat and both dispatch lanes together (measured live 2026-11-16: ~90s of `json.dumps` in the
+# reply path, `message.react` frames never even read before the client's 60s deadline, and the
+# reaction write landing 1.4s AFTER the desktop rolled it back). A reply is therefore encoded on
+# this dedicated pool instead of the loop's own thread. It is deliberately NOT `asyncio.to_thread`:
+# that shares the executor a turn's tool work saturates, so a busy turn would queue every reply.
+# No size probe decides this — measuring a frame's size means serializing it — and one thread hop
+# costs microseconds against a stall measured in seconds.
+_serialize_pool = concurrent.futures.ThreadPoolExecutor(
+    max_workers=2, thread_name_prefix="ws-serialize")
+
+
 def _touch_dashboard_client_marker(path) -> None:
     with _dashboard_client_touch_lock:
         # Cleared before the write: activity during a slow write queues exactly one follow-up.
@@ -229,6 +242,10 @@ class WSTransport:
     def write(self, obj: dict) -> bool:
         if self._closed:
             return False
+        # Encoded on the CALLER's thread (a tool/agent worker for nearly every event), which is the
+        # point. The loop-thread caller of this SYNC entry keeps it inline on purpose: two writes
+        # from the loop must keep call order, and off-loop encodes could swap them. Loop-issued
+        # frames that may be big (RPC replies, ordered batches) use ``write_async``.
         line = serialize_frame(obj, self._peer, _log)
         on_loop = self._on_loop()
         # Streamed token: buffer it and arm the flush timer; the worker returns immediately.
@@ -292,14 +309,24 @@ class WSTransport:
         """The WebSocket this transport writes to (what sign-out tracks a browser tab by)."""
         return self._ws
 
+    async def _serialize(self, obj: dict) -> str:
+        """``serialize_frame`` OFF the event loop (why: ``_serialize_pool``).
+
+        The module-level name is resolved at call time so a test can pin the encoding thread.
+        """
+        return await self._loop.run_in_executor(_serialize_pool, serialize_frame, obj, self._peer, _log)
+
     async def write_async(self, obj: dict) -> bool:
         """Send from the owning loop; awaits until the frame is on the wire. Buffered tokens are flushed
         ahead of it in the SAME batch so nothing slips between."""
         if self._closed:
             return False
+        # Encode before taking the token lock: tokens buffered WHILE a big frame encodes must still
+        # go ahead of it (wire order = buffer order), exactly as the former inline encode did.
+        line = await self._serialize(obj)
         with self._token_lock:
             batch, self._pending_tokens = self._pending_tokens, []
-            batch.append(serialize_frame(obj, self._peer, _log))
+            batch.append(line)
         await self._safe_send_many(batch)
         return not self._closed
 
@@ -311,10 +338,12 @@ class WSTransport:
         """Recheck the batch's owner at each send without gating other producers' buffered tokens."""
         if self._closed:
             return False
+        # Encoded off-loop (``_serialize_pool``) before the lock; ``gather`` keeps the caller's order.
+        encoded = await asyncio.gather(*(self._serialize(frame) for frame in frames)) if frames else []
         with self._token_lock:
             batch, self._pending_tokens = self._pending_tokens, []
             unguarded_prefix = len(batch)
-            batch.extend(serialize_frame(frame, self._peer, _log) for frame in frames)
+            batch.extend(encoded)
         await self._safe_send_many(batch, is_current=is_current, unguarded_prefix=unguarded_prefix)
         return not self._closed
 

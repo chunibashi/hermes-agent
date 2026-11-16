@@ -42,6 +42,11 @@ function writeReactions(messageId: string, reactions: MessageReaction[], rowId?:
   )
 }
 
+/** A deadline that expired bounds the REPLY, never the write. */
+function isTimeout(err: unknown): boolean {
+  return /timed out/i.test(err instanceof Error ? err.message : String(err ?? ''))
+}
+
 /**
  * Toggle *author*'s reaction on a persisted message.
  *
@@ -92,6 +97,14 @@ export async function toggleMessageReaction(
 
   writeReactions(message.id, applyReaction(snapshot, emoji, author))
 
+  const send = () =>
+    requestForOwnedSession<MessageReactResponse>(sessionId, ambientRequest, 'message.react', {
+      session_id: sessionId,
+      ...(targetRowId === undefined ? { newest_role: message.role } : { row_id: targetRowId }),
+      emoji,
+      author
+    })
+
   try {
     // Route through the session's OWNER, not the ambient active gateway: the
     // window may be foregrounding a different profile/connection than the one
@@ -104,12 +117,26 @@ export async function toggleMessageReaction(
     // setups where the owner cannot be named. The selected stored-id fallback
     // above matters here too: owner lookup can resolve the stored id even
     // while the runtime binding is still being rebuilt.
-    const result = await requestForOwnedSession<MessageReactResponse>(sessionId, ambientRequest, 'message.react', {
-      session_id: sessionId,
-      ...(targetRowId === undefined ? { newest_role: message.role } : { row_id: targetRowId }),
-      emoji,
-      author
-    })
+    //
+    // A timed-out reply is NOT a failed write: the deadline bounds the answer,
+    // so the commit can land after it (measured live — the reaction reached the
+    // state DB 1.4s AFTER this window rolled it back, on a gateway whose event
+    // loop had stalled ~90s). `message.react` sets one author's emoji
+    // ABSOLUTELY (`set_message_reaction` replaces that author's entry), so
+    // re-sending the same request converges instead of flipping the tapback,
+    // and the retry's reply carries the row's real list. Rollback + a toast is
+    // reserved for a second failure, where the write really is unknown.
+    let result: MessageReactResponse
+
+    try {
+      result = await send()
+    } catch (err) {
+      if (!isTimeout(err)) {
+        throw err
+      }
+
+      result = await send()
+    }
 
     // Learn the row id from the response so later toggles address it directly.
     // Only learn when the bubble carried no durable row of its own: a folded
