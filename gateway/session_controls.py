@@ -743,15 +743,13 @@ class AuthorityConnection:
                 opening.release()
         from gateway.session_connections import pending_connection
         from gateway.session_server_requests import open_requests
-        # Its home module, not tui_gateway.server: importing the stdio sidecar points sys.stdout at stderr.
-        from tui_gateway.tool_progress import _todo_state_from_history
         history, display = list(snapshot.history), {}
         if params.get('display_projection'):
             # A micro-compaction merge stays in ``messages`` (an undo target); its originals are what shows.
             display['display_messages'] = display_projection(
                 [row for row in history if not model_only(row)], self.authority.profile_id)
         return {'session_id': ref.session_id, 'stored_session_id': ref.session_id,
-                'messages': history, **display, 'message_count': len(history),
+                **await _resume_transcript(self.authority, ref, snapshot, history, omit), **display,
                 'running': snapshot.handle.execution_state == 'running',
                 'authority_epoch': snapshot.handle.authority_epoch,
                 'replay_epoch': snapshot.replay_epoch, 'last_sequence': snapshot.last_sequence,
@@ -763,9 +761,7 @@ class AuthorityConnection:
                 # Still-waiting server→client requests: the event ring cannot say "still open".
                 'open_requests': open_requests(self.authority.sessions[snapshot.handle.ref.session_id].event_stream,
                                                snapshot.handle.ref.session_id),
-                # The newest todo result in the transcript, the snapshot the session's agent hydrates
-                # from and its ``todo.updated`` frames carried: a viewer attaching shows the plan now.
-                'todo_state': _todo_state_from_history(history)}
+                }
 
     def _spawn_notice(self, ref):
         """Low-disk auto-prune question for this viewer, off the resume reply's path."""
