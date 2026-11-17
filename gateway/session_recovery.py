@@ -480,7 +480,6 @@ class SessionRecoveryMixin:
         predecessor row (its end was skipped, or a concurrent create won the race), so the pointer
         names a row that never landed and the user's conversation silently reads as a brand-new
         empty chat. Retire every live row still holding the key, then retry once."""
-        db = self._db_for_key(session_key)
         try:
             from persistence.conversation.sessions import NewSession
             spec = dict(db_create_kwargs)
@@ -491,21 +490,3 @@ class SessionRecoveryMixin:
                 db_create_kwargs["session_id"], session_key, origin, display_name=display_name)
         except Exception as e:
             log(e)
-            new_sid = db_create_kwargs.get("session_id")
-            if db is None or "admission_conflict" not in str(e):
-                return
-            try:
-                holders = db._read_all(
-                    "SELECT id FROM sessions WHERE session_key=? AND ended_at IS NULL", (session_key,))
-                for holder in holders:
-                    if holder["id"] != new_sid:
-                        self._promote_session_reset(
-                            session_key, holder["id"], "session_reset", log=log)
-                db.create_session(**db_create_kwargs)
-                self._record_gateway_session_peer(
-                    new_sid, session_key, origin, display_name=display_name)
-                logger.warning(
-                    "gateway.session: created session row %s for %s after retiring the predecessor "
-                    "row(s) still holding the key", new_sid, session_key)
-            except Exception as retry_exc:
-                log(retry_exc)
