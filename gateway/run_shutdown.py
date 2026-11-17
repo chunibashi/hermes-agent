@@ -920,26 +920,26 @@ class GatewayShutdownMixin(GatewaySessionEndMixin, GatewayHomeShutdownNoticeMixi
             try:
                 from gateway.config import Platform as _EventPlatform
                 from gateway.session_authorities import all_authorities
-                from hermes_state_runtime import list_session_admissions
+                from gateway.session_persistence import authority_persistence
                 for authority in all_authorities(self):
                     try:
-                        rows = authority.db._read_all(
-                            "SELECT session_key FROM sessions "
-                            "WHERE source='local' AND ended_at IS NULL") or []
-                        for row in rows:
-                            key = row["session_key"]
-                            # Recover only sessions that carry UNFINISHED work — a started/queued/
-                            # unknown admission (a live or interrupted turn). A session that was merely
-                            # opened recently but has no pending admission is NOT the conversation the
-                            # restart must resume; waking it would speak into a chat the user isn't in.
+                        store = authority_persistence(authority)
+                        # Recover only sessions that carry UNFINISHED work — a started/queued/
+                        # unknown admission (a live or interrupted turn). A session that was merely
+                        # opened recently but has no pending admission is NOT the conversation the
+                        # restart must resume; waking it would speak into a chat the user isn't in.
+                        pending_targets = store.admissions.pending_targets(
+                            statuses=frozenset({"started", "queued", "unknown"}))
+                        for target in pending_targets:
                             try:
-                                entry = self.session_store.lookup_by_session_key(key)
-                                if entry is None:
+                                owner = authority.logical_owner(target)
+                                row = store.sessions.get(owner)
+                                if row is None or row.source != "local" or row.ended_at is not None:
                                     continue
-                                owner = authority.logical_owner(entry.session_id)
-                                pending = list_session_admissions(authority.db, session_id=owner)
-                                if any(r["status"] in ("started", "queued", "unknown") for r in pending):
-                                    keys.add(key)
+                                key = row.session_key
+                                if not key or self.session_store.lookup_by_session_key(key) is None:
+                                    continue
+                                keys.add(key)
                             except Exception:
                                 continue
                     except Exception as exc:
@@ -2065,7 +2065,7 @@ class GatewayShutdownMixin(GatewaySessionEndMixin, GatewayHomeShutdownNoticeMixi
             return
         _step = GatewayShutdownMixin._quiet_step
         # Close SQLite session DBs so --replace's new gateway does not hit 'database is locked'.
-        # ``_session_db`` is an AsyncSessionDB facade — unwrap; ``session_store`` holds ``_db``.
+        # ``_session_db`` may wrap the SessionDB it serves (``_db``): unwrap; ``session_store`` holds ``_db``.
         _self_db = getattr(self, "_session_db", None)
         _self_db = getattr(_self_db, "_db", _self_db)
         store = getattr(self, "session_store", None)
@@ -2080,13 +2080,11 @@ class GatewayShutdownMixin(GatewaySessionEndMixin, GatewayHomeShutdownNoticeMixi
         _step("Runner SessionDB handle sweep error", lambda: GatewayRunner.close_all_session_db_handles(self))
 
         def _close_shared() -> None:
-            # Shared SessionDB instances still held by the process-wide registry (tools, cron, mirror).
-            # This is the safety net that guarantees no WAL write lock survives past gateway shutdown
-            # (#90837).
-            from hermes_state_registry import close_all
-            closed = close_all()
-            if closed:
-                logger.debug("Closed %d shared SessionDB instance(s) at shutdown", closed)
+            # Shared stores still held in the process-wide registry (tools, cron, mirror, the storage interface).
+            # This is the safety net that guarantees no WAL write lock survives past gateway shutdown (#90837).
+            from persistence_assembly import close_all_stores
+            if closed := close_all_stores():
+                logger.debug("Closed %d shared store(s) at shutdown", closed)
 
         _step("Shared SessionDB close error", _close_shared)
         logger.info("Shutdown phase: SessionDB close done at +%.2fs", ctx.elapsed())

@@ -902,56 +902,54 @@ class GatewayStartupMixin:
         waking them would make the AI speak into chats the user is not in.
         """
         try:
-            from gateway.session_contract import SessionRef
             from gateway.session_authorities import all_authorities
             from gateway.run import _auto_continue_freshness_window
-            from hermes_state_runtime import list_session_admissions
+            from gateway.session_persistence import authority_persistence
             freshness = _auto_continue_freshness_window()
             for authority in all_authorities(self):
+                store = authority_persistence(authority)
                 # A hard kill (SIGKILL / OOM / VM death) can leave the interrupted turn in
-                # ``started`` when the drain never got to settle it. Authority bring-up runs
-                # ``recover_session_inputs`` (started -> unknown) BEFORE adapters connect, but
-                # this sweep must not depend on that ordering: re-run it here (idempotent) so a
-                # stale ``started`` row can never slip past the cut/ack checks below and surface
-                # as the manual 「重启期间该轮次已丢弃」 card the user has to click.
+                # ``started`` when the drain never got to settle it. Authority bring-up runs the
+                # store's own ``recover`` (started -> unknown, foreign-epoch steers settled) BEFORE
+                # adapters connect, but this sweep must not depend on that ordering: re-run it here
+                # (idempotent) so a stale ``started`` row can never slip past the cut/ack checks
+                # below and surface as the manual 「重启期间该轮次已丢弃」 card the user has to click.
                 try:
-                    from hermes_state_runtime import recover_session_inputs
-                    await asyncio.to_thread(
-                        recover_session_inputs, authority.db, epoch=authority.epoch)
+                    await asyncio.to_thread(store.admissions.recover, epoch=authority.epoch)
                 except Exception as exc:
                     logger.warning(
                         "Restart recovery: pre-sweep started->unknown pass failed for %s: %s",
                         authority.profile_id, exc)
                 try:
-                    # EVERY live session, not only ``source='local'``: a restart cuts a
+                    # EVERY routing key, not only ``source='local'``: a restart cuts a
                     # Telegram/QQ turn exactly like a desktop one, and one unsettled
                     # ``unknown`` row pauses THAT chat's FIFO just the same. Scanning
                     # local-only left platform lanes blocked behind a red card the user
                     # had to Discard by hand.
-                    rows = authority.db._read_all(
-                        "SELECT id, session_key, last_activity_at, source FROM sessions "
-                        "WHERE ended_at IS NULL") or []
+                    live = await asyncio.to_thread(
+                        store.sessions.list_gateway_sessions, active_only=True)
                 except Exception as exc:
                     logger.debug("Unknown-sweep session scan failed for %s: %s", authority.profile_id, exc)
                     continue
-                for row in rows:
+                for entry in live:
                     # One failing session must never abort the sweep for every other session
                     # (a stale ``unknown`` row then keeps its 「重启期间该轮次已丢失」 card and
                     # blocks the chat until the user clicks Discard). Isolate each session;
                     # the failure is logged, the sweep moves on.
                     try:
-                        await self._sweep_one_session_admissions(authority, row, freshness)
+                        await self._sweep_one_session_admissions(
+                            authority, entry.session, entry.last_active, freshness)
                     except Exception as exc:
                         logger.warning(
                             "Restart recovery: sweep failed for session %s: %s",
-                            row.get("session_key", row.get("id")), exc)
+                            entry.session.session_key or entry.session.session_id, exc)
         except Exception as exc:
             # Was debug: a sweep that raises leaves stale ``unknown`` rows behind, and the
             # desktop then shows 「重启期间该轮次已丢失」 with a Discard button the user must
             # click before the chat can continue. That failure must be visible in the log.
             logger.warning("Restart recovery unknown-sweep failed: %s", exc)
 
-    async def _sweep_one_session_admissions(self, authority, row, freshness) -> None:
+    async def _sweep_one_session_admissions(self, authority, session, last_active, freshness) -> None:
         """Sweep one session's orphaned admissions: settle every ``unknown`` turn and wake
         the session if a restart cut its most recent turn (no completed turn after it).
 
@@ -964,31 +962,32 @@ class GatewayStartupMixin:
         ``unknown`` card requiring a manual Discard).
         """
         from gateway.session_contract import SessionRef
-        from hermes_state_runtime import list_session_admissions
-        owner = authority.logical_owner(row["id"])
+        from gateway.session_persistence import authority_persistence
+        store = authority_persistence(authority)
+        owner = authority.logical_owner(session.session_id)
         try:
             # Full history (not just pending): an AI-requested watchdog restart
             # interrupts the turn to ``terminal/interrupted`` which is NOT pending.
-            all_rows = list_session_admissions(
-                authority.db, session_id=owner, pending_only=False)
+            all_rows = await asyncio.to_thread(
+                store.admissions.list, session_id=owner, pending_only=False)
         except Exception:
             return
         if not all_rows:
             return
         ref = SessionRef(authority.profile_id, owner)
         for admission in all_rows:
-            if admission["status"] != "unknown":
+            if admission.status != 'unknown':
                 continue
             try:
                 await authority.resolve_unknown_as_owner(
-                    ref, admission["admission_id"], admission["generation"])
+                    ref, admission.admission_id, admission.generation)
                 logger.info(
                     "Restart recovery: auto-acknowledged unknown admission %s for %s "
                     "(previously lost turn no longer blocks the queue)",
-                    admission["admission_id"], row["session_key"])
+                    admission.admission_id, session.session_key)
             except Exception as exc:
                 logger.info("Restart recovery: auto-resolve of unknown %s failed: %s",
-                            admission["admission_id"], exc)
+                            admission.admission_id, exc)
         # Wake when a turn was cut short by a restart and nobody continued after it:
         # the most recent ``unknown`` (crash) or ``interrupted`` (watchdog
         # planned-stop) with no ``completed`` turn after it. A completed turn after
@@ -1000,8 +999,7 @@ class GatewayStartupMixin:
         # dead stop the local wake exists to prevent.
         if not (
             freshness <= 0
-            or (row["last_activity_at"]
-                and (time.time() - float(row["last_activity_at"])) <= freshness)
+            or (last_active and (time.time() - float(last_active)) <= freshness)
         ):
             return
         cut_idx = None
@@ -1009,21 +1007,21 @@ class GatewayStartupMixin:
             # A cut turn is either ``unknown`` (crash, never settled) or
             # ``terminal``/``interrupted`` (settled but interrupted by the restart
             # — what an unclean exit leaves in session_admissions).
-            if r["status"] == "unknown" or (
-                    r["status"] == "terminal" and r["outcome"] == "interrupted"):
+            if r.status == 'unknown' or (r.status == 'terminal' and r.outcome == 'interrupted'):
                 cut_idx = i
         if cut_idx is None:
             return
         has_completed_after = any(
-            r["status"] == "terminal" and r["outcome"] == "completed"
+            r.status == 'terminal' and r.outcome == 'completed'
             for r in all_rows[cut_idx + 1:])
         if has_completed_after:
             return
-        self._schedule_recovery_wake_for_key(row["session_key"])
+        self._schedule_recovery_wake_for_key(session.session_key)
         logger.info(
             "Restart recovery: scheduled wake for interrupted session %s "
             "(%s turn cut short by restart)",
-            row["session_key"], all_rows[cut_idx]["status"])
+            session.session_key, all_rows[cut_idx].status)
+
 
     def _startup_should_abort(self) -> bool:
         return self._restart_requested or self._draining or self._shutdown_event.is_set()
@@ -1125,21 +1123,21 @@ class GatewayStartupMixin:
         """
         from gateway.config import Platform as _EventPlatform
         from gateway.session_authorities import all_authorities
-        from hermes_state_runtime import list_session_admissions
+        from gateway.session_persistence import authority_persistence
         promoted = 0
         cutoff = time.time() - max_age_seconds
         for authority in all_authorities(self):
+            store = authority_persistence(authority)
             try:
-                rows = authority.db._read_all(
-                    "SELECT id, session_key, last_activity_at FROM sessions "
-                    "WHERE ended_at IS NULL") or []
+                rows = await asyncio.to_thread(store.sessions.list_gateway_sessions, active_only=True)
             except Exception as exc:
                 logger.debug("Canonical-promote session scan failed for %s: %s", authority.profile_id, exc)
                 continue
             for row in rows:
-                owner = authority.logical_owner(row["id"])
+                session = row.session
+                owner = authority.logical_owner(session.session_id)
                 try:
-                    entry = self.session_store.lookup_by_session_key(row["session_key"])
+                    entry = self.session_store.lookup_by_session_key(session.session_key)
                 except Exception:
                     continue
                 if entry is None or entry.suspended or entry.resume_pending:
@@ -1149,8 +1147,8 @@ class GatewayStartupMixin:
                 if origin is None or getattr(origin, "platform", None) == _EventPlatform.LOCAL:
                     continue
                 try:
-                    all_rows = list_session_admissions(
-                        authority.db, session_id=owner, pending_only=False)
+                    all_rows = await asyncio.to_thread(
+                        store.admissions.list, session_id=owner, pending_only=False)
                 except Exception:
                     continue
                 if not all_rows:
@@ -1161,31 +1159,31 @@ class GatewayStartupMixin:
                     # A cut turn is either ``unknown`` (crash, never settled) or
                     # ``terminal``/``interrupted`` (settled but interrupted by the restart
                     # — what an unclean exit leaves in session_admissions).
-                    if r["status"] == "unknown" or (
-                            r["status"] == "terminal" and r["outcome"] == "interrupted"):
+                    if r.status == "unknown" or (
+                            r.status == "terminal" and r.outcome == "interrupted"):
                         cut_idx = i
                 if cut_idx is None:
                     continue
                 has_completed_after = any(
-                    r["status"] == "terminal" and r["outcome"] == "completed"
+                    r.status == "terminal" and r.outcome == "completed"
                     for r in all_rows[cut_idx + 1:])
                 if has_completed_after:
                     continue
                 # Fresh within the crash-recovery window; stale cuts are left alone.
-                la = row["last_activity_at"] or 0
+                la = row.last_active or 0
                 if not la or float(la) < cutoff:
                     continue
                 try:
                     await self.async_session_store.mark_resume_pending(
-                        row["session_key"], reason="restart_interrupted")
+                        session.session_key, reason="restart_interrupted")
                     promoted += 1
                     logger.info(
                         "Restart recovery: promoted %s to resume_pending "
                         "(canonical %s turn cut short by unclean exit)",
-                        row["session_key"], all_rows[cut_idx]["status"])
+                        session.session_key, all_rows[cut_idx].status)
                 except Exception as exc:
                     logger.info("Restart recovery: promote %s failed: %s",
-                                row["session_key"], exc)
+                                session.session_key, exc)
         return promoted
 
     async def _ledger_crash_left_replies(self, max_age_seconds: int) -> int:

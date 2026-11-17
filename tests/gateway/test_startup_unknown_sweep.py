@@ -9,8 +9,13 @@ a Telegram session's ``unknown`` row was neither settled nor continued. Four que
 messages sat behind it forever — 「4 条排队 — 已暂停」 — while the local-only sweep
 reported success. A ``hermes update`` restarts the gateway regardless of which lane was
 mid-turn, so a platform lane must be swept and woken exactly like a local one.
+
+Reads/writes go through the storage interface (``authority_persistence``): the boot sweep
+uses ``admissions.recover`` (started -> unknown), ``admissions.list`` (the session's rows)
+and ``sessions.list_gateway_sessions`` (every live routing key, all sources).
 """
 import time
+from types import SimpleNamespace
 
 import pytest
 
@@ -28,9 +33,36 @@ class _Runner(GatewayStartupMixin):
         self.woken.append(session_key)
 
 
+class _Admissions:
+    def __init__(self, rows):
+        self._rows = rows
+        self.recovered: list[int] = []
+
+    def list(self, *, session_id, pending_only=True):
+        return self._rows
+
+    def recover(self, *, epoch):
+        self.recovered.append(epoch)
+        return 0
+
+
+class _Sessions:
+    def __init__(self, entries):
+        self._entries = entries
+
+    def list_gateway_sessions(self, *, active_only=True):
+        return self._entries
+
+
+class _Store:
+    def __init__(self, rows, entries=()):
+        self.admissions = _Admissions(rows)
+        self.sessions = _Sessions(entries)
+
+
 class _Authority:
     profile_id = "default"
-    db = object()  # only ever passed through to the patched list_session_admissions
+    epoch = 116
 
     def __init__(self):
         self.resolved: list[tuple[str, int]] = []
@@ -43,34 +75,35 @@ class _Authority:
 
 
 def _admissions(status="unknown", outcome=None):
-    return [{
-        "admission_id": "adm-1",
-        "generation": 7,
-        "status": status,
-        "outcome": outcome,
-    }]
+    return [SimpleNamespace(admission_id="adm-1", generation=7, status=status, outcome=outcome)]
 
 
-def _row(source: str, *, fresh: bool = True) -> dict:
-    now = time.time()
-    return {
-        "id": f"20261029_065956_{source}",
-        "session_key": f"agent:main:{source}:dm:1",
-        "source": source,
-        "last_activity_at": now if fresh else now - 86400 * 30,
-    }
+def _session(source: str) -> SimpleNamespace:
+    return SimpleNamespace(
+        session_id=f"20261029_065956_{source}",
+        session_key=f"agent:main:{source}:dm:1",
+        source=source,
+    )
+
+
+@pytest.fixture
+def store_of(monkeypatch):
+    """Patch the seam the sweep imports inside the method (the defining module)."""
+
+    def _install(store):
+        monkeypatch.setattr("gateway.session_persistence.authority_persistence", lambda authority: store)
+        return store
+
+    return _install
 
 
 @pytest.mark.asyncio
-async def test_telegram_unknown_is_settled_and_woken(monkeypatch):
+async def test_telegram_unknown_is_settled_and_woken(store_of):
     """A platform lane cut by a restart must free its FIFO AND resume the turn."""
-    monkeypatch.setattr(
-        "hermes_state_runtime.list_session_admissions",
-        lambda *a, **k: _admissions(),
-    )
+    store_of(_Store(_admissions()))
     runner = _Runner()
     authority = _Authority()
-    await runner._sweep_one_session_admissions(authority, _row("telegram"), 3600.0)
+    await runner._sweep_one_session_admissions(authority, _session("telegram"), time.time(), 3600.0)
 
     assert authority.resolved == [("adm-1", 7)], "telegram unknown must be auto-settled"
     assert runner.woken == ["agent:main:telegram:dm:1"], (
@@ -79,31 +112,25 @@ async def test_telegram_unknown_is_settled_and_woken(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_local_unknown_is_settled_and_woken(monkeypatch):
+async def test_local_unknown_is_settled_and_woken(store_of):
     """Unchanged for local sessions: settle the cut turn AND continue the conversation."""
-    monkeypatch.setattr(
-        "hermes_state_runtime.list_session_admissions",
-        lambda *a, **k: _admissions(),
-    )
+    store_of(_Store(_admissions()))
     runner = _Runner()
     authority = _Authority()
-    await runner._sweep_one_session_admissions(authority, _row("local"), 3600.0)
+    await runner._sweep_one_session_admissions(authority, _session("local"), time.time(), 3600.0)
 
     assert authority.resolved == [("adm-1", 7)]
     assert runner.woken == ["agent:main:local:dm:1"]
 
 
 @pytest.mark.asyncio
-async def test_stale_telegram_session_settled_without_wake(monkeypatch):
+async def test_stale_telegram_session_settled_without_wake(store_of):
     """Staleness never blocks settling: an old orphan still frees the lane, but no wake."""
-    monkeypatch.setattr(
-        "hermes_state_runtime.list_session_admissions",
-        lambda *a, **k: _admissions(),
-    )
+    store_of(_Store(_admissions()))
     runner = _Runner()
     authority = _Authority()
     await runner._sweep_one_session_admissions(
-        authority, _row("telegram", fresh=False), 3600.0)
+        authority, _session("telegram"), time.time() - 86400 * 30, 3600.0)
 
     assert authority.resolved == [("adm-1", 7)]
     assert runner.woken == []
@@ -112,43 +139,23 @@ async def test_stale_telegram_session_settled_without_wake(monkeypatch):
 @pytest.mark.asyncio
 async def test_scan_lists_every_live_session(monkeypatch):
     """Contract: the boot sweep's session scan returns platform lanes too."""
-    captured: dict[str, str] = {}
+    scanned: dict[str, bool] = {}
+    store = _Store(_admissions(), entries=[SimpleNamespace(session=_session("telegram"),
+                                                         last_active=time.time())])
+    monkeypatch.setattr("gateway.session_persistence.authority_persistence", lambda authority: store)
+    monkeypatch.setattr("gateway.session_authorities.all_authorities", lambda self: [_Authority()])
 
-    class _Db:
-        def _read_all(self, sql):
-            captured["sql"] = sql
-            return []
+    seen: list[str] = []
 
-    class _Authority:
-        profile_id = "default"
+    async def _record(self, authority, session, last_active, freshness):
+        seen.append(session.session_key)
 
-        def __init__(self):
-            self.db = _Db()
-            self.epoch = 116
-
-    async def _noop(*a, **k):
-        return None
-
-    monkeypatch.setattr(
-        "hermes_state_runtime.recover_session_inputs", _noop, raising=False)
-    # ``run_startup`` imports ``all_authorities`` inside the method, so the seam is the
-    # defining module, not the facade.
-    monkeypatch.setattr(
-        "gateway.session_authorities.all_authorities", lambda self: [_Authority()])
-
-    async def _noop_sweep(self, authority, row, freshness):
-        return None
-
-    monkeypatch.setattr(_Runner, "_sweep_one_session_admissions", _noop_sweep,
-                        raising=False)
+    monkeypatch.setattr(_Runner, "_sweep_one_session_admissions", _record, raising=False)
     await _Runner()._sweep_startup_unknown_admissions()
 
-    sql = " ".join(captured.get("sql", "").split()).lower()
-    assert sql, "sweep must scan sessions"
-    assert "ended_at is null" in sql
-    where = sql.split("where", 1)[-1]
-    assert "source" not in where, (
-        "a source predicate in the WHERE clause re-creates the platform dead stop: " + sql)
+    assert store.admissions.recovered == [_Authority.epoch], "the started->unknown pass runs first"
+    assert seen == ["agent:main:telegram:dm:1"], (
+        "a source predicate would re-create the platform dead stop; every live routing key is swept")
 
 
 # --- one restart, one 「[系统恢复]」 ------------------------------------------------
