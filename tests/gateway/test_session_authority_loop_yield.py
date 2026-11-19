@@ -19,6 +19,7 @@ from gateway.config import GatewayConfig
 from gateway.session import SessionStore
 from gateway.session_authority import initialize_session_authority
 from gateway.session_controls import AuthorityConnection
+from tests.fixtures.storage_seed import seed_messages, seed_session
 
 
 async def _native(tmp_path, monkeypatch):
@@ -26,24 +27,24 @@ async def _native(tmp_path, monkeypatch):
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     monkeypatch.setattr(run, '_load_gateway_config', lambda: {'platform_toolsets': {'cli': []}})
     store = SessionStore(tmp_path / 'sessions', GatewayConfig())
-    runner = SimpleNamespace(session_store=store, _session_db=store._db, adapters={}, _draining=False,
+    runner = SimpleNamespace(session_store=store, _session_db=store.persistence, adapters={}, _draining=False,
                              _cached_agent_for=lambda route: None)
     runner._adapter_for_source = lambda source: runner.adapters.get(source.platform)
     authority = await initialize_session_authority(runner, profile_id=str(tmp_path), instance_id='owner')
     native = AuthorityConnection(authority, object(), {'provider': 'local', 'user_id': 'native',
         'profile_id': str(tmp_path), 'instance_id': 'owner'})
-    return store._db, native
+    return store.persistence, native
 
 
 def _seed(db):
     # Same shape as the display-projection test (an ended tui session): the resume
     # restore path is what this file exercises, not the projection itself.
-    db.create_session('old-tui', source='tui', model='fake-model')
-    db.append_message('old-tui', 'user', 'hello there')
-    db.append_message('old-tui', 'assistant', 'hi, how can I help')
-    db.append_message('old-tui', 'user', 'run the tool')
-    db.append_message('old-tui', 'assistant', 'done')
-    db.end_session('old-tui', 'tui_shutdown')
+    seed_session(db, 'old-tui', 'tui', model='fake-model')
+    seed_messages(db, 'old-tui', {'role': 'user', 'content': 'hello there'})
+    seed_messages(db, 'old-tui', {'role': 'assistant', 'content': 'hi, how can I help'})
+    seed_messages(db, 'old-tui', {'role': 'user', 'content': 'run the tool'})
+    seed_messages(db, 'old-tui', {'role': 'assistant', 'content': 'done'})
+    db.sessions.end('old-tui', 'tui_shutdown')
 
 
 @pytest.mark.asyncio
@@ -54,17 +55,18 @@ async def test_resume_history_read_runs_off_loop(tmp_path, monkeypatch):
     _seed(db)
 
     reader_ident = {}
-    _orig_local_history = slr.local_history
+    _orig_display_rows = slr.display_rows
 
-    def _slow_local_history(authority, ref, prepared=None):
-        # Record WHICH thread runs the resume's history read. The fix offloads it to a
-        # worker; before that it ran synchronously on the owner (event loop) thread and
-        # froze the WS reader. A slow (0.3s) simulated read makes the distinction real.
+    def _slow_display_rows(store, target):
+        # Record WHICH thread runs the resume's lineage read (``prepare_history`` offloads it
+        # through the resume pool). Before that fix it ran synchronously on the owner (event
+        # loop) thread and froze the WS reader. A slow (0.3s) simulated read makes the
+        # distinction real.
         reader_ident['tid'] = threading.get_ident()
         time.sleep(0.3)
-        return _orig_local_history(authority, ref, prepared)
+        return _orig_display_rows(store, target)
 
-    monkeypatch.setattr(slr, 'local_history', _slow_local_history)
+    monkeypatch.setattr(slr, 'display_rows', _slow_display_rows)
     loop_ident = threading.get_ident()  # the test runs on the event loop thread
 
     reply = await asyncio.wait_for(
