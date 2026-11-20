@@ -1047,13 +1047,17 @@ describe('preserveLocalAssistantErrors', () => {
     expect(assistant?.pending).toBe(false)
   })
 
-  it('keeps the LIVE id when a stored row reconciles onto a streaming bubble (#思考了片刻 label)', () => {
+  it('adopts the durable id when a stored row reconciles onto a streaming bubble (#思考了片刻 label)', () => {
     // Turn settle triggers reconcileActiveTranscript (sessions.changed →
     // busy=false), which rebuilds messages from stored history. The rebuilt
     // row carries a NEW id (`1789337604-0-assistant`) while the live bubble
-    // was `assistant-stream-1-...`. The timer registry keys measured reasoning
-    // durations by `reasoning:${messageId}:${startIndex}`, so adopting the
-    // stored id here would drop the "思考了片刻" label to "已思考" on settle.
+    // was `assistant-stream-1-...`. The durable id must win here (upstream pins
+    // it in reconciliation.test.ts, #119326/#120978: a refresh never re-appends
+    // the same turn under a second id). What protects the "思考了片刻" label
+    // across that swap is the reasoning text — activity-timer mirrors finished
+    // durations under reasoningContentKey and consults it when the id-keyed
+    // lookup misses — so this test pins the text and the tool timing surviving,
+    // not the id.
     const stored = toChatMessages([
       {
         role: 'assistant',
@@ -1093,17 +1097,20 @@ describe('preserveLocalAssistantErrors', () => {
 
     const [merged] = preserveLocalAssistantErrors(stored, live)
 
-    // The live id must survive so useMeasuredDuration's timerKey
-    // (`reasoning:${messageId}:${startIndex}`) still finds the measured value.
-    expect(merged.id).toBe('assistant-stream-1-1789337604000-1')
+    // The durable row id survives, so the refresh cannot re-append the turn.
+    expect(merged.id).toBe(stored[0].id)
     expect(merged.parts.map(p => p.type)).toEqual(['reasoning', 'tool-call'])
+    // The measured reasoning text and the live tool result both survive, which
+    // is what the content-keyed duration mirror and the tool-data guard need.
     expect((merged.parts[0] as { text: string }).text).toBe('think-1 用户调用了 wiki 技能')
+    expect((merged.parts[1] as { result: unknown }).result).toEqual({ ok: true })
   })
 
-  it('keeps the LIVE id for a thinking-only bubble matched by reasoning text', () => {
+  it('matches a thinking-only bubble by reasoning text and adopts the durable id', () => {
     // Tool-call turns where the first API call ships reasoning + tool_calls
     // with no text: the rebuilt row has no chatMessageText, so the match must
-    // fall back to reasoning content for the live id to survive.
+    // fall back to reasoning content — without that the live bubble would be
+    // re-appended as a second row instead of folded onto the durable one.
     const stored = toChatMessages([
       { role: 'assistant', reasoning: 'let me plan the tool call', content: '', timestamp: 3 }
     ])
@@ -1128,7 +1135,8 @@ describe('preserveLocalAssistantErrors', () => {
 
     const [merged] = preserveLocalAssistantErrors(stored, live)
 
-    expect(merged.id).toBe('assistant-stream-1-1789337604000-1')
+    expect(merged.id).toBe(stored[0].id)
+    expect(merged.parts.map(p => p.type)).toEqual(['reasoning'])
   })
 })
 
