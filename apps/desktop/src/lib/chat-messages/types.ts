@@ -92,6 +92,8 @@ export type ChatMessage = {
    *  source row. The reaction picker addresses this row so a tapback lands
    *  on the prose the user read, not the turn's narration. */
   reactionRowId?: number
+  /** The send a stored prompt row holds (`display_metadata.submission_id`); its live copy's id is `user-<it>`. */
+  submissionId?: string
   /** Backend transcript rows this message represents — the hydration fold
    *  merges a turn's tool rows into the assistant message they belong to, so a
    *  message is not one backend row. The older-page offset (transcript-tail) is
