@@ -130,25 +130,21 @@ def build_footer_line(*, user_config: dict[str, Any] | None, platform_key: str |
 
 
 class FooteredReply(str):
-    """A final reply whose text ends with ``\n\n<runtime_footer>``. Plain text everywhere; any
+    """A final reply built as ``text + "\n\n" + runtime_footer``. Plain text everywhere; any
     rewrite yields a plain ``str`` again, so the footer then simply stays in the text."""
     runtime_footer: str
+    _text_len: int
 
     def __new__(cls, text: str, footer: str):
         instance = super().__new__(cls, f"{text}\n\n{footer}")
         instance.runtime_footer = footer
+        instance._text_len = len(text)
         return instance
 
-    # The gateway deep-copies this inside an event envelope (``session_events.publish``). A ``str``
-    # subclass is absent from ``copy._deepcopy_dispatch``, so ``copy`` rebuilds it through
-    # ``copyreg.__newobj__`` — which passes the text alone and trips the required ``footer``
-    # argument, failing the whole completion publish. The value is immutable, so sharing the
-    # instance IS the correct copy.
-    def __copy__(self):
-        return self
-
-    def __deepcopy__(self, memo):
-        return self
+    def __getnewargs_ex__(self) -> tuple[tuple[str, str], dict[str, Any]]:
+        # copy/pickle rebuild via __new__ (``SessionEvents.publish`` deep-copies the reply). Split at
+        # the stored length: ``runtime_footer`` is a plain attribute that may no longer match the text.
+        return (self[:self._text_len], self[self._text_len + 2:]), {}
 
 
 class _FooterCaption(str):
